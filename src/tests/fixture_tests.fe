@@ -1,0 +1,201 @@
+use ingot::fixtures::{
+    mainnet_account_absent,
+    mainnet_account_eoa,
+    mainnet_storage_absent,
+    mainnet_storage_usdc,
+    mainnet_storage_weth,
+}
+use ingot::fixture_support::{
+    check_account_nodes,
+    check_present_account_leaf,
+    check_slot_nodes,
+    node_at,
+    word_bytes,
+}
+use ingot::{EMPTY_CODE_HASH, EMPTY_STORAGE_ROOT}
+use core::hash::keccak256_word
+
+#[test]
+fn eoa_fixture_chains_to_its_state_root() {
+    core::assert(mainnet_account_eoa::ACCOUNT_PRESENT)
+    core::assert(mainnet_account_eoa::STORAGE_ROOT == EMPTY_STORAGE_ROOT)
+    let buffer = check_account_nodes(
+        mainnet_account_eoa::ACCOUNT_BYTES,
+        mainnet_account_eoa::ACCOUNT_OFFSETS,
+        node_count: mainnet_account_eoa::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_account_eoa::STATE_ROOT,
+    )
+    check_present_account_leaf(
+        buffer,
+        mainnet_account_eoa::ACCOUNT_OFFSETS,
+        node_count: mainnet_account_eoa::ACCOUNT_NODE_COUNT,
+        storage_root: mainnet_account_eoa::STORAGE_ROOT,
+        code_hash: mainnet_account_eoa::CODE_HASH,
+    )
+    check_slot_nodes(
+        mainnet_account_eoa::SLOT_BYTES,
+        mainnet_account_eoa::SLOT_OFFSETS,
+        mainnet_account_eoa::SLOT_NODE_STARTS,
+        slot_count: mainnet_account_eoa::SLOT_COUNT,
+        storage_root: mainnet_account_eoa::STORAGE_ROOT,
+    )
+}
+
+#[test]
+fn absent_account_fixture_chains_and_carries_defaults() {
+    core::assert(!mainnet_account_absent::ACCOUNT_PRESENT)
+    core::assert(mainnet_account_absent::NONCE == 0)
+    core::assert(mainnet_account_absent::BALANCE == 0)
+    core::assert(mainnet_account_absent::STORAGE_ROOT == EMPTY_STORAGE_ROOT)
+    core::assert(mainnet_account_absent::CODE_HASH == EMPTY_CODE_HASH)
+    let _ = check_account_nodes(
+        mainnet_account_absent::ACCOUNT_BYTES,
+        mainnet_account_absent::ACCOUNT_OFFSETS,
+        node_count: mainnet_account_absent::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_account_absent::STATE_ROOT,
+    )
+}
+
+#[test]
+fn absent_slot_fixture_chains_to_the_storage_root() {
+    core::assert(mainnet_storage_absent::ACCOUNT_PRESENT)
+    core::assert(mainnet_storage_absent::SLOT_COUNT == 1)
+    core::assert(!mainnet_storage_absent::SLOT_PRESENT[0])
+    core::assert(mainnet_storage_absent::SLOT_VALUES[0] == 0)
+    let buffer = check_account_nodes(
+        mainnet_storage_absent::ACCOUNT_BYTES,
+        mainnet_storage_absent::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_absent::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_storage_absent::STATE_ROOT,
+    )
+    check_present_account_leaf(
+        buffer,
+        mainnet_storage_absent::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_absent::ACCOUNT_NODE_COUNT,
+        storage_root: mainnet_storage_absent::STORAGE_ROOT,
+        code_hash: mainnet_storage_absent::CODE_HASH,
+    )
+    check_slot_nodes(
+        mainnet_storage_absent::SLOT_BYTES,
+        mainnet_storage_absent::SLOT_OFFSETS,
+        mainnet_storage_absent::SLOT_NODE_STARTS,
+        slot_count: mainnet_storage_absent::SLOT_COUNT,
+        storage_root: mainnet_storage_absent::STORAGE_ROOT,
+    )
+}
+
+#[test]
+fn usdc_fixture_chains_to_the_storage_root() {
+    core::assert(mainnet_storage_usdc::ACCOUNT_PRESENT)
+    core::assert(mainnet_storage_usdc::SLOT_COUNT == 1)
+    core::assert(mainnet_storage_usdc::SLOT_PRESENT[0])
+    core::assert(mainnet_storage_usdc::SLOT_VALUES[0] != 0)
+    let buffer = check_account_nodes(
+        mainnet_storage_usdc::ACCOUNT_BYTES,
+        mainnet_storage_usdc::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_usdc::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_storage_usdc::STATE_ROOT,
+    )
+    check_present_account_leaf(
+        buffer,
+        mainnet_storage_usdc::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_usdc::ACCOUNT_NODE_COUNT,
+        storage_root: mainnet_storage_usdc::STORAGE_ROOT,
+        code_hash: mainnet_storage_usdc::CODE_HASH,
+    )
+    check_slot_nodes(
+        mainnet_storage_usdc::SLOT_BYTES,
+        mainnet_storage_usdc::SLOT_OFFSETS,
+        mainnet_storage_usdc::SLOT_NODE_STARTS,
+        slot_count: mainnet_storage_usdc::SLOT_COUNT,
+        storage_root: mainnet_storage_usdc::STORAGE_ROOT,
+    )
+}
+
+#[test]
+fn weth_fixture_chains_for_every_slot() {
+    core::assert(mainnet_storage_weth::ACCOUNT_PRESENT)
+    core::assert(mainnet_storage_weth::SLOT_COUNT == 3)
+    core::assert(mainnet_storage_weth::SLOT_VALUES[2] == 18)
+    let buffer = check_account_nodes(
+        mainnet_storage_weth::ACCOUNT_BYTES,
+        mainnet_storage_weth::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_weth::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_storage_weth::STATE_ROOT,
+    )
+    check_present_account_leaf(
+        buffer,
+        mainnet_storage_weth::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_weth::ACCOUNT_NODE_COUNT,
+        storage_root: mainnet_storage_weth::STORAGE_ROOT,
+        code_hash: mainnet_storage_weth::CODE_HASH,
+    )
+    check_slot_nodes(
+        mainnet_storage_weth::SLOT_BYTES,
+        mainnet_storage_weth::SLOT_OFFSETS,
+        mainnet_storage_weth::SLOT_NODE_STARTS,
+        slot_count: mainnet_storage_weth::SLOT_COUNT,
+        storage_root: mainnet_storage_weth::STORAGE_ROOT,
+    )
+}
+
+#[test]
+fn trie_paths_are_keccak_of_the_keys() {
+    core::assert(
+        keccak256_word(mainnet_account_eoa::ADDRESS_BYTES) == mainnet_account_eoa::ACCOUNT_PATH,
+    )
+    core::assert(
+        keccak256_word(mainnet_storage_weth::ADDRESS_BYTES) == mainnet_storage_weth::ACCOUNT_PATH,
+    )
+    core::assert(
+        keccak256_word(mainnet_account_absent::ADDRESS_BYTES)
+            == mainnet_account_absent::ACCOUNT_PATH,
+    )
+    var slot: usize = 0
+    while slot < mainnet_storage_weth::SLOT_COUNT {
+        let key = word_bytes(mainnet_storage_weth::SLOT_KEYS[slot])
+        core::assert(
+            keccak256_word(key.span()) == mainnet_storage_weth::SLOT_PATHS[slot],
+        )
+        slot += 1
+    }
+    let absent_key = word_bytes(mainnet_storage_absent::SLOT_KEYS[0])
+    core::assert(
+        keccak256_word(absent_key.span()) == mainnet_storage_absent::SLOT_PATHS[0],
+    )
+}
+
+#[test]
+fn fixtures_from_the_same_block_share_the_state_trie_root_node() {
+    core::assert(
+        mainnet_account_eoa::BLOCK_HASH == mainnet_account_absent::BLOCK_HASH,
+    )
+    core::assert(
+        mainnet_account_eoa::BLOCK_HASH == mainnet_storage_absent::BLOCK_HASH,
+    )
+    core::assert(
+        mainnet_account_eoa::BLOCK_HASH == mainnet_storage_weth::BLOCK_HASH,
+    )
+    core::assert(
+        mainnet_account_eoa::STATE_ROOT == mainnet_storage_weth::STATE_ROOT,
+    )
+    let eoa = check_account_nodes(
+        mainnet_account_eoa::ACCOUNT_BYTES,
+        mainnet_account_eoa::ACCOUNT_OFFSETS,
+        node_count: mainnet_account_eoa::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_account_eoa::STATE_ROOT,
+    )
+    let weth = check_account_nodes(
+        mainnet_storage_weth::ACCOUNT_BYTES,
+        mainnet_storage_weth::ACCOUNT_OFFSETS,
+        node_count: mainnet_storage_weth::ACCOUNT_NODE_COUNT,
+        state_root: mainnet_storage_weth::STATE_ROOT,
+    )
+    let a = node_at(eoa, mainnet_account_eoa::ACCOUNT_OFFSETS, 0)
+    let b = node_at(weth, mainnet_storage_weth::ACCOUNT_OFFSETS, 0)
+    core::assert(a.len() == b.len())
+    core::assert(keccak256_word(a) == keccak256_word(b))
+    core::assert(
+        mainnet_storage_usdc::BLOCK_HASH != mainnet_account_eoa::BLOCK_HASH,
+    )
+}

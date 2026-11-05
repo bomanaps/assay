@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main, scaffold]
   pull_request:
 
 permissions:
@@ -21,6 +20,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Fixture integrity
+        run: |
+          python3 -m pip install --user pycryptodome==3.23.0
+          python3 -I tools/capture_getproof.py verify fixtures/*.json
+          python3 -I tools/oracle_mpt.py fixtures/*.json
+          python3 -I tools/gen_fixtures.py check
       - name: Check out Fe at the pinned commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -58,7 +63,3 @@ jobs:
         run: fe/target/release/fe test
       - name: Tests on the native backend
         run: fe/target/release/fe test --backend native
-      - name: Fixture integrity
-        run: |
-          python3 -m pip install --user pycryptodome==3.23.0
-          python3 tools/capture_getproof.py verify fixtures/*.json
