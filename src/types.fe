@@ -1,0 +1,273 @@
+use core::ops::Eq
+use core::marker::Snapshot
+use core::default::Default
+
+pub const EMPTY_STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
+pub const EMPTY_CODE_HASH: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
+
+pub struct Root(u256)
+
+impl Copy for Root {}
+impl Snapshot for Root {}
+
+impl Eq for Root {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Root {
+    pub const fn new(_ value: u256) -> Self {
+        Root(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct StateRoot(u256)
+
+impl Copy for StateRoot {}
+impl Snapshot for StateRoot {}
+
+impl Eq for StateRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StateRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StateRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct StorageRoot(u256)
+
+impl Copy for StorageRoot {}
+impl Snapshot for StorageRoot {}
+
+impl Eq for StorageRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StorageRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StorageRoot(value)
+    }
+
+    pub const fn empty() -> Self {
+        StorageRoot(EMPTY_STORAGE_ROOT)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct CodeHash(u256)
+
+impl Copy for CodeHash {}
+impl Snapshot for CodeHash {}
+
+impl Eq for CodeHash {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl CodeHash {
+    pub const fn new(_ value: u256) -> Self {
+        CodeHash(value)
+    }
+
+    pub const fn empty() -> Self {
+        CodeHash(EMPTY_CODE_HASH)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct BeaconRoot(u256)
+
+impl Copy for BeaconRoot {}
+impl Snapshot for BeaconRoot {}
+
+impl Eq for BeaconRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl BeaconRoot {
+    pub const fn new(_ value: u256) -> Self {
+        BeaconRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct GIndex(u256)
+
+impl Copy for GIndex {}
+impl Snapshot for GIndex {}
+
+impl Eq for GIndex {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl GIndex {
+    pub const fn new(_ value: u256) -> Self {
+        GIndex(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct TrieKey(u256)
+
+impl Copy for TrieKey {}
+impl Snapshot for TrieKey {}
+
+impl Eq for TrieKey {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl TrieKey {
+    pub const fn new(_ value: u256) -> Self {
+        TrieKey(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct AccountState {
+    pub nonce: u64,
+    pub balance: u256,
+    pub storage_root: StorageRoot,
+    pub code_hash: CodeHash,
+}
+
+impl Copy for AccountState {}
+
+impl Eq for AccountState {
+    const fn eq(self, _ other: Self) -> bool {
+        self.nonce == other.nonce
+            && self.balance == other.balance
+            && self.storage_root == other.storage_root
+            && self.code_hash == other.code_hash
+    }
+}
+
+impl Default for AccountState {
+    fn default() -> Self {
+        AccountState::missing()
+    }
+}
+
+impl AccountState {
+    pub const fn missing() -> Self {
+        AccountState {
+            nonce: 0,
+            balance: 0,
+            storage_root: StorageRoot::empty(),
+            code_hash: CodeHash::empty(),
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.nonce == 0 && self.balance == 0 && self.code_hash == CodeHash::empty()
+    }
+}
+
+pub enum Proven<T> {
+    Present(T),
+    Absent,
+}
+
+impl<T> Copy for Proven<T> where T: Copy {}
+
+impl<T: Eq> Eq for Proven<T> {
+    fn eq(self, _ other: Self) -> bool {
+        match self {
+            Self::Present(ref value) => match other {
+                Proven::Present(ref other_value) => value == other_value,
+                Proven::Absent => false,
+            },
+            Self::Absent => other.is_absent(),
+        }
+    }
+}
+
+impl<T> Proven<T> {
+    pub fn is_present(self) -> bool {
+        match self {
+            Self::Present(_) => true,
+            Self::Absent => false,
+        }
+    }
+
+    pub fn is_absent(self) -> bool {
+        !self.is_present()
+    }
+}
+
+pub enum ProofError {
+    BadRlp,
+    HashMismatch(usize),
+    PathExhausted,
+    TrailingNodes,
+    BadHexPrefix,
+    BranchValueOnPath,
+    DepthOutOfRange,
+    GIndexMismatch,
+}
+
+impl Copy for ProofError {}
+
+impl Eq for ProofError {
+    fn eq(self, _ other: Self) -> bool {
+        match (self, other) {
+            (Self::BadRlp, Self::BadRlp) => true,
+            (Self::HashMismatch(depth), Self::HashMismatch(other_depth)) => depth == other_depth,
+            (Self::PathExhausted, Self::PathExhausted) => true,
+            (Self::TrailingNodes, Self::TrailingNodes) => true,
+            (Self::BadHexPrefix, Self::BadHexPrefix) => true,
+            (Self::BranchValueOnPath, Self::BranchValueOnPath) => true,
+            (Self::DepthOutOfRange, Self::DepthOutOfRange) => true,
+            (Self::GIndexMismatch, Self::GIndexMismatch) => true,
+            _ => false,
+        }
+    }
+}
