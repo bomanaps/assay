@@ -22,10 +22,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Fixture integrity
         run: |
-          python3 -m pip install --user pycryptodome==3.23.0
-          python3 -I tools/capture_getproof.py verify fixtures/*.json
-          python3 -I tools/oracle_mpt.py fixtures/*.json
-          python3 -I tools/gen_fixtures.py check
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pycryptodome==3.23.0
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/capture_getproof.py verify fixtures/*.json
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_mpt.py fixtures/*.json
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
       - name: Check out Fe at the pinned commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
