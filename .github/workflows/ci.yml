@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, scaffold]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FE_COMMIT: 3371dfd35e201a1fe077d1f1ccb62dbeec6e4808
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check out Fe at the pinned commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: argotorg/fe
+          ref: ${{ env.FE_COMMIT }}
+          path: fe
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+      - name: Generate tree-sitter parser
+        working-directory: fe/crates/tree-sitter-fe
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild tree-sitter-cli
+          npx tree-sitter generate --abi=14
+      - name: Cache Fe build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: fe
+          cache-on-failure: true
+      - name: Build Fe
+        run: cargo build --locked --release -p fe --features cranelift --manifest-path fe/Cargo.toml
+      - name: Fe version
+        run: fe/target/release/fe --version
+      - name: Format check
+        run: fe/target/release/fe fmt --check
+      - name: Type check
+        run: fe/target/release/fe check
+      - name: Tests on the EVM backend
+        run: fe/target/release/fe test
+      - name: Tests on the native backend
+        run: fe/target/release/fe test --backend native
+      - name: Fixture integrity
+        run: |
+          python3 -m pip install --user pycryptodome==3.23.0
+          python3 tools/capture_getproof.py verify fixtures/*.json

@@ -1,0 +1,235 @@
+use ingot::{
+    AccountState,
+    BeaconRoot,
+    CodeHash,
+    GIndex,
+    ProofError,
+    Proven,
+    Root,
+    StateRoot,
+    StorageRoot,
+    TrieKey,
+    EMPTY_CODE_HASH,
+    EMPTY_STORAGE_ROOT,
+}
+use core::default::Default
+use core::hash::keccak256_word
+use core::MemBuffer
+use std::evm::rlp
+
+const WORD: u256 = 0x0102030405060708091011121314151617181920212223242526272829303132
+
+fn account(
+    nonce: u64,
+    balance: u256,
+    storage_root: StorageRoot,
+    code_hash: CodeHash,
+) -> AccountState {
+    AccountState { nonce, balance, storage_root, code_hash }
+}
+
+#[test]
+fn empty_code_hash_is_keccak_of_nothing() {
+    let empty = MemBuffer::new(0)
+    core::assert(keccak256_word(empty.span()) == EMPTY_CODE_HASH)
+}
+
+#[test]
+fn empty_storage_root_is_keccak_of_rlp_empty_string() {
+    let encoded = rlp::encode_bytes(MemBuffer::new(0).span())
+    core::assert(encoded.payload_span().len() == 1)
+    core::assert(encoded.payload_span().byte_at(0) == 0x80)
+    core::assert(
+        keccak256_word(encoded.payload_span()) == EMPTY_STORAGE_ROOT,
+    )
+}
+
+#[test]
+fn every_newtype_round_trips_its_word() {
+    core::assert(Root::new(WORD).value() == WORD)
+    core::assert(StateRoot::new(WORD).value() == WORD)
+    core::assert(StorageRoot::new(WORD).value() == WORD)
+    core::assert(CodeHash::new(WORD).value() == WORD)
+    core::assert(BeaconRoot::new(WORD).value() == WORD)
+    core::assert(GIndex::new(WORD).value() == WORD)
+    core::assert(TrieKey::new(WORD).value() == WORD)
+}
+
+#[test]
+fn every_newtype_compares_by_value() {
+    core::assert(
+        Root::new(1) == Root::new(1) && Root::new(1) != Root::new(2),
+    )
+    core::assert(
+        StateRoot::new(1) == StateRoot::new(1) && StateRoot::new(1) != StateRoot::new(2),
+    )
+    core::assert(
+        StorageRoot::new(1) == StorageRoot::new(1) && StorageRoot::new(1) != StorageRoot::new(2),
+    )
+    core::assert(
+        CodeHash::new(1) == CodeHash::new(1) && CodeHash::new(1) != CodeHash::new(2),
+    )
+    core::assert(
+        BeaconRoot::new(1) == BeaconRoot::new(1) && BeaconRoot::new(1) != BeaconRoot::new(2),
+    )
+    core::assert(
+        GIndex::new(1) == GIndex::new(1) && GIndex::new(1) != GIndex::new(2),
+    )
+    core::assert(
+        TrieKey::new(1) == TrieKey::new(1) && TrieKey::new(1) != TrieKey::new(2),
+    )
+}
+
+#[test]
+fn specific_roots_convert_to_plain_roots_without_changing_the_word() {
+    core::assert(StateRoot::new(WORD).as_root() == Root::new(WORD))
+    core::assert(StorageRoot::new(WORD).as_root() == Root::new(WORD))
+    core::assert(BeaconRoot::new(WORD).as_root() == Root::new(WORD))
+    core::assert(
+        StorageRoot::empty().as_root() == Root::new(EMPTY_STORAGE_ROOT),
+    )
+}
+
+#[test]
+fn empty_constructors_use_the_constants() {
+    core::assert(StorageRoot::empty().value() == EMPTY_STORAGE_ROOT)
+    core::assert(CodeHash::empty().value() == EMPTY_CODE_HASH)
+}
+
+#[test]
+fn missing_account_is_the_default_and_is_empty() {
+    let missing = AccountState::missing()
+    core::assert(missing.nonce == 0)
+    core::assert(missing.balance == 0)
+    core::assert(missing.storage_root == StorageRoot::empty())
+    core::assert(missing.code_hash == CodeHash::empty())
+    core::assert(missing == AccountState::default())
+    core::assert(missing.is_empty())
+}
+
+#[test]
+fn eip161_emptiness_ignores_storage_root_but_not_other_fields() {
+    let with_storage = account(
+        nonce: 0,
+        balance: 0,
+        storage_root: StorageRoot::new(WORD),
+        code_hash: CodeHash::empty(),
+    )
+    core::assert(with_storage.is_empty())
+    let with_nonce = account(
+        nonce: 1,
+        balance: 0,
+        storage_root: StorageRoot::empty(),
+        code_hash: CodeHash::empty(),
+    )
+    core::assert(!with_nonce.is_empty())
+    let with_balance = account(
+        nonce: 0,
+        balance: 1,
+        storage_root: StorageRoot::empty(),
+        code_hash: CodeHash::empty(),
+    )
+    core::assert(!with_balance.is_empty())
+    let with_code = account(
+        nonce: 0,
+        balance: 0,
+        storage_root: StorageRoot::empty(),
+        code_hash: CodeHash::new(WORD),
+    )
+    core::assert(!with_code.is_empty())
+}
+
+#[test]
+fn account_equality_checks_every_field() {
+    let base = AccountState::missing()
+    core::assert(base == AccountState::missing())
+    core::assert(
+        base
+            != account(
+                nonce: 1,
+                balance: 0,
+                storage_root: StorageRoot::empty(),
+                code_hash: CodeHash::empty(),
+            ),
+    )
+    core::assert(
+        base
+            != account(
+                nonce: 0,
+                balance: 1,
+                storage_root: StorageRoot::empty(),
+                code_hash: CodeHash::empty(),
+            ),
+    )
+    core::assert(
+        base
+            != account(
+                nonce: 0,
+                balance: 0,
+                storage_root: StorageRoot::new(WORD),
+                code_hash: CodeHash::empty(),
+            ),
+    )
+    core::assert(
+        base
+            != account(
+                nonce: 0,
+                balance: 0,
+                storage_root: StorageRoot::empty(),
+                code_hash: CodeHash::new(WORD),
+            ),
+    )
+}
+
+#[test]
+fn proven_equality_is_symmetric_and_payload_aware() {
+    let present: Proven<u256> = Proven::Present(5)
+    let other: Proven<u256> = Proven::Present(6)
+    let absent: Proven<u256> = Proven::Absent
+    core::assert(present.is_present() && !present.is_absent())
+    core::assert(absent.is_absent() && !absent.is_present())
+    core::assert(present == Proven::Present(5))
+    core::assert(present != other)
+    core::assert(other != present)
+    core::assert(present != absent)
+    core::assert(absent != present)
+    core::assert(absent == Proven::Absent)
+}
+
+#[test]
+fn proven_works_over_account_state() {
+    let account = account(
+        nonce: 7,
+        balance: 0,
+        storage_root: StorageRoot::empty(),
+        code_hash: CodeHash::empty(),
+    )
+    let proven: Proven<AccountState> = Proven::Present(account)
+    core::assert(proven == Proven::Present(account))
+    core::assert(proven != Proven::Present(AccountState::missing()))
+    core::assert(proven != Proven::Absent)
+}
+
+#[test]
+fn proof_errors_equal_only_themselves() {
+    let errors: [ProofError; 8] = [
+        ProofError::BadRlp,
+        ProofError::HashMismatch(3),
+        ProofError::PathExhausted,
+        ProofError::TrailingNodes,
+        ProofError::BadHexPrefix,
+        ProofError::BranchValueOnPath,
+        ProofError::DepthOutOfRange,
+        ProofError::GIndexMismatch,
+    ]
+    var i: usize = 0
+    while i < 8 {
+        var j: usize = 0
+        while j < 8 {
+            core::assert((errors[i] == errors[j]) == (i == j))
+            j += 1
+        }
+        i += 1
+    }
+    core::assert(ProofError::HashMismatch(3) != ProofError::HashMismatch(4))
+}

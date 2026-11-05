@@ -1,0 +1,14 @@
+pub use types::{
+    AccountState,
+    BeaconRoot,
+    CodeHash,
+    GIndex,
+    ProofError,
+    Proven,
+    Root,
+    StateRoot,
+    StorageRoot,
+    TrieKey,
+    EMPTY_CODE_HASH,
+    EMPTY_STORAGE_ROOT,
+}
