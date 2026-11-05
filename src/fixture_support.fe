@@ -1,0 +1,139 @@
+use core::hash::keccak256_word
+use core::{MemBuffer, MemSpan}
+use ingot::EMPTY_STORAGE_ROOT
+
+pub const MAX_NODE_LEN: usize = 532
+pub const HASH_LEN: usize = 32
+
+pub fn load<const N: usize>(_ bytes: [u8; N]) -> MemBuffer {
+    var buffer = MemBuffer::with_capacity(N)
+    var i: usize = 0
+    while i < N {
+        buffer.push(bytes[i])
+        i += 1
+    }
+    buffer
+}
+
+pub fn node_at<const M: usize>(
+    _ buffer: MemBuffer,
+    _ offsets: [usize; M],
+    _ index: usize,
+) -> ref MemSpan {
+    buffer.span().slice(
+            offset: offsets[index],
+            len: offsets[index + 1] - offsets[index],
+        )
+}
+
+pub fn word_bytes(_ word: u256) -> MemBuffer {
+    var buffer = MemBuffer::new(HASH_LEN)
+    buffer.write_word(offset: 0, value: word)
+    buffer
+}
+
+pub fn contains_word(_ span: MemSpan, _ word: u256) -> bool {
+    if span.len() < HASH_LEN {
+        return false
+    }
+    var offset: usize = 0
+    while offset + HASH_LEN <= span.len() {
+        if span.read_word(offset) == word {
+            return true
+        }
+        offset += 1
+    }
+    false
+}
+
+pub fn check_offsets<const M: usize>(_ offsets: [usize; M], node_count: usize, total_len: usize) {
+    core::assert(M == node_count + 1)
+    core::assert(offsets[0] == 0)
+    var i: usize = 0
+    while i < node_count {
+        core::assert(offsets[i] < offsets[i + 1])
+        core::assert(offsets[i + 1] - offsets[i] <= MAX_NODE_LEN)
+        i += 1
+    }
+    core::assert(offsets[node_count] == total_len)
+}
+
+pub fn check_chain<const M: usize>(
+    _ buffer: MemBuffer,
+    _ offsets: [usize; M],
+    first: usize,
+    count: usize,
+    root: u256,
+) {
+    core::assert(count > 0)
+    core::assert(keccak256_word(node_at(buffer, offsets, first)) == root)
+    var i: usize = first
+    while i + 1 < first + count {
+        let child = node_at(buffer, offsets, i + 1)
+        core::assert(child.len() >= HASH_LEN)
+        core::assert(
+            contains_word(node_at(buffer, offsets, i), keccak256_word(child)),
+        )
+        i += 1
+    }
+}
+
+pub fn check_account_nodes<const N: usize, const M: usize>(
+    _ bytes: [u8; N],
+    _ offsets: [usize; M],
+    node_count: usize,
+    state_root: u256,
+) -> MemBuffer {
+    check_offsets(offsets, node_count, total_len: N)
+    let buffer = load(bytes)
+    check_chain(
+        buffer,
+        offsets,
+        first: 0,
+        count: node_count,
+        root: state_root,
+    )
+    buffer
+}
+
+pub fn check_present_account_leaf<const M: usize>(
+    _ buffer: MemBuffer,
+    _ offsets: [usize; M],
+    node_count: usize,
+    storage_root: u256,
+    code_hash: u256,
+) {
+    let leaf = node_at(buffer, offsets, node_count - 1)
+    core::assert(contains_word(leaf, storage_root))
+    core::assert(contains_word(leaf, code_hash))
+}
+
+pub fn check_slot_nodes<const N: usize, const M: usize, const S: usize>(
+    _ bytes: [u8; N],
+    _ offsets: [usize; M],
+    _ starts: [usize; S],
+    slot_count: usize,
+    storage_root: u256,
+) {
+    core::assert(S == slot_count + 1)
+    core::assert(starts[0] == 0)
+    check_offsets(offsets, node_count: starts[slot_count], total_len: N)
+    let buffer = load(bytes)
+    var slot: usize = 0
+    while slot < slot_count {
+        core::assert(starts[slot] <= starts[slot + 1])
+        let nodes = starts[slot + 1] - starts[slot]
+        if storage_root == EMPTY_STORAGE_ROOT {
+            core::assert(nodes == 0)
+        } else {
+            check_chain(
+                buffer,
+                offsets,
+                first: starts[slot],
+                count: nodes,
+                root: storage_root,
+            )
+        }
+        slot += 1
+    }
+}
