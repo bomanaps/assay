@@ -1,0 +1,98 @@
+use core::{MemBuffer, MemSpan}
+use std::evm::crypto::keccak256
+use std::evm::rlp::{self, Item}
+use ingot::mpt::{verify_trie, ProofNodes, HASH_LEN}
+use ingot::{AccountState, CodeHash, ProofError, Proven, StateRoot, StorageRoot, TrieKey}
+
+pub const ACCOUNT_FIELDS: usize = 4
+pub const ADDRESS_LEN: usize = 20
+
+pub fn account_key(_ address: [u8; 20]) -> TrieKey {
+    let buffer = address_span(address)
+    TrieKey::new(keccak256(buffer.span()))
+}
+
+fn address_span(_ address: [u8; 20]) -> MemBuffer {
+    var buffer = MemBuffer::new(ADDRESS_LEN)
+    var i: usize = 0
+    while i < ADDRESS_LEN {
+        buffer[i] = address[i]
+        i += 1
+    }
+    buffer
+}
+
+pub fn decode_account(_ encoded: MemSpan) -> Result<ProofError, AccountState> {
+    let item = match rlp::decode(encoded) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let fields = match item.items(encoded) {
+        Option::Some(fields) => fields,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if fields.len() != ACCOUNT_FIELDS {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let nonce = match fields[0].as_uint(encoded) {
+        Option::Some(nonce) => nonce,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let balance = match fields[1].as_uint(encoded) {
+        Option::Some(balance) => balance,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let storage_root = word_field(fields[2], encoded)?
+    let code_hash = word_field(fields[3], encoded)?
+    let nonce64: u64 = match nonce.downcast() {
+        Option::Some(nonce64) => nonce64,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    Result::Ok(
+        AccountState {
+            nonce: nonce64,
+            balance,
+            storage_root: StorageRoot::new(storage_root),
+            code_hash: CodeHash::new(code_hash),
+        },
+    )
+}
+
+fn word_field(_ item: Item, _ encoded: MemSpan) -> Result<ProofError, u256> {
+    if item.is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let bytes = item.payload(encoded)
+    if bytes.len() != HASH_LEN {
+        return Result::Err(ProofError::BadRlp)
+    }
+    Result::Ok(bytes.read_word(0))
+}
+
+pub fn verify_account<P: ProofNodes>(
+    state_root: StateRoot,
+    _ address: [u8; 20],
+    nodes: P,
+) -> Result<ProofError, Proven<AccountState>> {
+    match verify_trie(
+        root: state_root.as_root(),
+        key: account_key(address),
+        nodes,
+    )? {
+        Proven::Present(leaf) => {
+            let account = decode_account(leaf.item.payload(nodes.node(leaf.node)))?
+            Result::Ok(Proven::Present(account))
+        },
+        Proven::Absent => Result::Ok(Proven::Absent),
+    }
+}

@@ -1,0 +1,95 @@
+use ingot::nibbles::{decode_hex_prefix, key_nibble, path_nibble, HexPath, KEY_NIBBLES}
+use ingot::ProofError
+use core::MemBuffer
+
+fn bytes<const N: usize>(_ values: [u8; N]) -> MemBuffer {
+    var buffer = MemBuffer::new(N)
+    var i: usize = 0
+    while i < N {
+        buffer[i] = values[i]
+        i += 1
+    }
+    buffer
+}
+
+fn expect_path<const N: usize, const L: usize>(
+    _ encoded: [u8; N],
+    is_leaf: bool,
+    _ nibbles: [usize; L],
+) {
+    let buffer = bytes(encoded)
+    let path = match decode_hex_prefix(buffer.span()) {
+        Result::Ok(path) => path,
+        Result::Err(_) => {
+            core::assert(false)
+            HexPath { is_leaf: false, skip: 0, len: 0 }
+        },
+    }
+    core::assert(path.is_leaf == is_leaf)
+    core::assert(path.len == L)
+    var i: usize = 0
+    while i < L {
+        core::assert(path_nibble(path, buffer.span(), i) == nibbles[i])
+        i += 1
+    }
+}
+
+fn expect_bad<const N: usize>(_ encoded: [u8; N]) {
+    let buffer = bytes(encoded)
+    match decode_hex_prefix(buffer.span()) {
+        Result::Err(ProofError::BadHexPrefix) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn yellow_paper_hex_prefix_examples() {
+    expect_path([0x11, 0x23, 0x45], is_leaf: false, [1, 2, 3, 4, 5])
+    expect_path(
+        [0x00, 0x01, 0x23, 0x45],
+        is_leaf: false,
+        [0, 1, 2, 3, 4, 5],
+    )
+    expect_path(
+        [0x20, 0x0f, 0x1c, 0xb8],
+        is_leaf: true,
+        [0, 15, 1, 12, 11, 8],
+    )
+    expect_path([0x3f, 0x1c, 0xb8], is_leaf: true, [15, 1, 12, 11, 8])
+}
+
+#[test]
+fn empty_paths_decode_for_both_node_kinds() {
+    expect_path([0x00], is_leaf: false, [0 as usize; 0])
+    expect_path([0x20], is_leaf: true, [0 as usize; 0])
+}
+
+#[test]
+fn single_nibble_paths_use_the_odd_flag() {
+    expect_path([0x1a], is_leaf: false, [10])
+    expect_path([0x3a], is_leaf: true, [10])
+}
+
+#[test]
+fn malformed_hex_prefixes_are_rejected() {
+    expect_bad([0 as u8; 0])
+    expect_bad([0x40])
+    expect_bad([0xf0, 0x12])
+    expect_bad([0x01, 0x23])
+    expect_bad([0x21, 0x23, 0x45])
+    expect_bad([0x2f])
+}
+
+#[test]
+fn key_nibbles_cover_all_sixty_four_positions() {
+    let key: u256 = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    var i: usize = 0
+    while i < KEY_NIBBLES {
+        core::assert(key_nibble(key, i) == i % 16)
+        i += 1
+    }
+    core::assert(key_nibble(0, 0) == 0)
+    core::assert(key_nibble(1, 63) == 1)
+    core::assert(key_nibble(0xf0, 62) == 15)
+    core::assert(key_nibble(0xf0, 63) == 0)
+}

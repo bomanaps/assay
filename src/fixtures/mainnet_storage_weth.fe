@@ -3850,6 +3850,7 @@ pub const SLOT_VALUES: [u256; 3] = [
     18,
 ]
 pub const SLOT_NODE_STARTS: [usize; 4] = [0, 7, 15, 22]
+pub const SLOT_NODE_COUNTS: [usize; 3] = [7, 8, 7]
 pub const SLOT_OFFSETS: [usize; 23] = [
     0,
     532,

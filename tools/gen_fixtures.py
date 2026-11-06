@@ -17,7 +17,8 @@ Layout of a generated module: proof nodes are concatenated into one byte
 array, and an offsets array marks where each node starts, with one extra
 entry equal to the total length. Storage proofs for every slot are
 concatenated the same way, and SLOT_NODE_STARTS gives, per slot, the index
-into SLOT_OFFSETS where that slot's nodes begin, again with one extra entry.
+into SLOT_OFFSETS where that slot's nodes begin, again with one extra entry,
+and SLOT_NODE_COUNTS gives the number of nodes per slot.
 ACCOUNT_PATH and SLOT_PATHS are the keccak hashed trie keys the oracle walked.
 The oracle also verifies that the header hashes to BLOCK_HASH before any
 constant is written, so the state root is bound to the block.
@@ -110,6 +111,7 @@ def render(fixture):
         bool_array("SLOT_PRESENT", [s["present"] for s in result["slots"]]),
         word_array("SLOT_VALUES", [str(s["value"]) for s in result["slots"]]),
         usize_array("SLOT_NODE_STARTS", slot_starts),
+        usize_array("SLOT_NODE_COUNTS", [len(s["nodes"]) for s in result["slots"]]),
         usize_array("SLOT_OFFSETS", slot_offsets),
         byte_array("SLOT_BYTES", slot_bytes),
     ]

@@ -1,0 +1,45 @@
+use core::MemSpan
+use ingot::ProofError
+
+pub const KEY_NIBBLES: usize = 64
+pub const FLAG_ODD: usize = 1
+pub const FLAG_LEAF: usize = 2
+
+pub fn key_nibble(_ key: u256, _ index: usize) -> usize {
+    core::assert(index < KEY_NIBBLES)
+    ((key >> ((252 - 4 * index) as u256)) & 0xf).downcast_truncate()
+}
+
+pub struct HexPath { pub is_leaf: bool, pub skip: usize, pub len: usize }
+
+impl Copy for HexPath {}
+
+pub fn decode_hex_prefix(_ encoded: MemSpan) -> Result<ProofError, HexPath> {
+    if encoded.len() == 0 {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    let first = encoded.byte_at(0) as usize
+    let flag = first >> 4
+    if flag > FLAG_LEAF + FLAG_ODD {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    let is_leaf = flag & FLAG_LEAF != 0
+    if flag & FLAG_ODD != 0 {
+        return Result::Ok(HexPath { is_leaf, skip: 1, len: 2 * encoded.len() - 1 })
+    }
+    if first & 0xf != 0 {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    Result::Ok(HexPath { is_leaf, skip: 2, len: 2 * encoded.len() - 2 })
+}
+
+pub fn path_nibble(_ path: HexPath, _ encoded: MemSpan, _ index: usize) -> usize {
+    core::assert(index < path.len)
+    let position = path.skip + index
+    let byte = encoded.byte_at(position / 2) as usize
+    if position % 2 == 0 {
+        byte >> 4
+    } else {
+        byte & 0xf
+    }
+}

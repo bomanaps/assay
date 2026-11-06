@@ -252,6 +252,7 @@ pub enum ProofError {
     BranchValueOnPath,
     DepthOutOfRange,
     GIndexMismatch,
+    KeyNotConsumed,
 }
 
 impl Copy for ProofError {}
@@ -267,6 +268,7 @@ impl Eq for ProofError {
             (Self::BranchValueOnPath, Self::BranchValueOnPath) => true,
             (Self::DepthOutOfRange, Self::DepthOutOfRange) => true,
             (Self::GIndexMismatch, Self::GIndexMismatch) => true,
+            (Self::KeyNotConsumed, Self::KeyNotConsumed) => true,
             _ => false,
         }
     }

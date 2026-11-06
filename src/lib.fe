@@ -1,3 +1,6 @@
+pub use account::{decode_account, verify_account}
+pub use mpt::{verify_trie, Leaf, NodeList, ProofNodes}
+pub use storage::{decode_storage_value, verify_storage}
 pub use types::{
     AccountState,
     BeaconRoot,

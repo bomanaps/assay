@@ -1,0 +1,420 @@
+use ingot::fixtures::{mainnet_storage_absent, mainnet_storage_usdc}
+use ingot::fixture_support::load
+use ingot::{
+    decode_account,
+    decode_storage_value,
+    verify_account,
+    verify_storage,
+    verify_trie,
+    AccountState,
+    NodeList,
+    ProofError,
+    ProofNodes,
+    Proven,
+    Root,
+    StateRoot,
+    StorageRoot,
+    TrieKey,
+}
+use core::MemBuffer
+use std::evm::crypto::keccak256
+
+const KEY_A: u256 = 0xa000000000000000000000000000000000000000000000000000000000000000
+
+fn usdc_account() -> NodeList {
+    NodeList::from_fixture(
+        mainnet_storage_usdc::ACCOUNT_BYTES,
+        mainnet_storage_usdc::ACCOUNT_OFFSETS,
+        first: 0,
+        count: mainnet_storage_usdc::ACCOUNT_NODE_COUNT,
+    )
+}
+
+fn usdc_slot0() -> NodeList {
+    NodeList::from_fixture(
+        mainnet_storage_usdc::SLOT_BYTES,
+        mainnet_storage_usdc::SLOT_OFFSETS,
+        first: 0,
+        count: mainnet_storage_usdc::SLOT_NODE_COUNTS[0],
+    )
+}
+
+fn absent_slot() -> NodeList {
+    NodeList::from_fixture(
+        mainnet_storage_absent::SLOT_BYTES,
+        mainnet_storage_absent::SLOT_OFFSETS,
+        first: 0,
+        count: mainnet_storage_absent::SLOT_NODE_COUNTS[0],
+    )
+}
+
+fn account_error(_ nodes: NodeList) -> ProofError {
+    match verify_account(
+        state_root: StateRoot::new(mainnet_storage_usdc::STATE_ROOT),
+        mainnet_storage_usdc::ADDRESS_BYTES,
+        nodes,
+    ) {
+        Result::Ok(_) => {
+            core::assert(false)
+            ProofError::BadRlp
+        },
+        Result::Err(error) => error,
+    }
+}
+
+fn storage_error(_ nodes: NodeList, slot: u256) -> ProofError {
+    match verify_storage(
+        storage_root: StorageRoot::new(mainnet_storage_usdc::STORAGE_ROOT),
+        slot,
+        nodes,
+    ) {
+        Result::Ok(_) => {
+            core::assert(false)
+            ProofError::BadRlp
+        },
+        Result::Err(error) => error,
+    }
+}
+
+fn single<const N: usize>(_ bytes: [u8; N]) -> (Root, NodeList) {
+    let node = load(bytes)
+    let root = Root::new(keccak256(node.span()))
+    var nodes = NodeList::new()
+    nodes.push(node.span())
+    (root, nodes)
+}
+
+fn trie_error<const N: usize>(_ bytes: [u8; N], key: u256) -> ProofError {
+    let (root, nodes) = single(bytes)
+    match verify_trie(root, key: TrieKey::new(key), nodes) {
+        Result::Ok(_) => {
+            core::assert(false)
+            ProofError::BadRlp
+        },
+        Result::Err(error) => error,
+    }
+}
+
+fn trie_absent<const N: usize>(_ bytes: [u8; N], key: u256) -> bool {
+    let (root, nodes) = single(bytes)
+    match verify_trie(root, key: TrieKey::new(key), nodes) {
+        Result::Ok(proven) => proven.is_absent(),
+        Result::Err(_) => false,
+    }
+}
+
+fn leaf_with_full_path(_ key: u256, _ value: [u8; 2]) -> [u8; 37] {
+    var node: [u8; 37] = [0; 37]
+    node[0] = 0xe4
+    node[1] = 0xa1
+    node[2] = 0x20
+    var i: usize = 0
+    while i < 32 {
+        node[3 + i] = ((key >> ((248 - 8 * i) as u256)) & 0xff).downcast_truncate()
+        i += 1
+    }
+    node[35] = value[0]
+    node[36] = value[1]
+    node
+}
+
+#[test]
+fn flipped_byte_reports_the_depth_of_the_corrupted_node() {
+    var nodes = usdc_account()
+    nodes.flip_byte(node: 0, at: 100)
+    core::assert(account_error(nodes) == ProofError::HashMismatch(0))
+    var deeper = usdc_account()
+    deeper.flip_byte(node: 3, at: 7)
+    core::assert(account_error(deeper) == ProofError::HashMismatch(3))
+    var last = usdc_account()
+    let last_index = last.count() - 1
+    last.flip_byte(node: last_index, at: 40)
+    core::assert(
+        account_error(last) == ProofError::HashMismatch(last_index),
+    )
+}
+
+#[test]
+fn missing_last_node_is_path_exhausted() {
+    var account = usdc_account()
+    account.drop_last()
+    core::assert(account_error(account) == ProofError::PathExhausted)
+    var storage = usdc_slot0()
+    storage.drop_last()
+    core::assert(
+        storage_error(storage, slot: 0) == ProofError::PathExhausted,
+    )
+    let empty = NodeList::new()
+    core::assert(account_error(empty) == ProofError::PathExhausted)
+}
+
+#[test]
+fn extra_node_after_a_terminal_node_is_rejected() {
+    var account = usdc_account()
+    account.duplicate_last()
+    core::assert(account_error(account) == ProofError::TrailingNodes)
+    var storage = usdc_slot0()
+    storage.duplicate_last()
+    core::assert(
+        storage_error(storage, slot: 0) == ProofError::TrailingNodes,
+    )
+    var absent = absent_slot()
+    absent.duplicate_last()
+    match verify_storage(
+        storage_root: StorageRoot::new(mainnet_storage_absent::STORAGE_ROOT),
+        slot: mainnet_storage_absent::SLOT_KEYS[0],
+        nodes: absent,
+    ) {
+        Result::Err(ProofError::TrailingNodes) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_proof_for_one_slot_does_not_prove_a_neighbouring_slot() {
+    core::assert(
+        storage_error(usdc_slot0(), slot: 1) == ProofError::HashMismatch(1),
+    )
+    core::assert(
+        storage_error(usdc_slot0(), slot: 256) == ProofError::HashMismatch(1),
+    )
+}
+
+#[test]
+fn wrong_root_fails_at_the_first_node() {
+    let nodes = usdc_account()
+    match verify_account(
+        state_root: StateRoot::new(1),
+        mainnet_storage_usdc::ADDRESS_BYTES,
+        nodes,
+    ) {
+        Result::Err(ProofError::HashMismatch(0)) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn empty_storage_trie_accepts_only_an_empty_proof() {
+    match verify_storage(
+        storage_root: StorageRoot::empty(),
+        slot: 5,
+        nodes: NodeList::new(),
+    ) {
+        Result::Ok(0) => core::assert(true),
+        _ => core::assert(false),
+    }
+    match verify_storage(
+        storage_root: StorageRoot::empty(),
+        slot: 5,
+        nodes: usdc_slot0(),
+    ) {
+        Result::Err(ProofError::TrailingNodes) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn leaf_that_ends_before_the_key_is_rejected() {
+    core::assert(
+        trie_error([0xc2, 0x3a, 0x01], key: KEY_A) == ProofError::KeyNotConsumed,
+    )
+}
+
+#[test]
+fn bad_hex_prefix_flag_is_rejected() {
+    core::assert(
+        trie_error([0xc2, 0x4a, 0x01], key: KEY_A) == ProofError::BadHexPrefix,
+    )
+}
+
+#[test]
+fn diverging_leaf_proves_absence() {
+    core::assert(trie_absent([0xc2, 0x3b, 0x01], key: KEY_A))
+}
+
+#[test]
+fn extension_with_an_empty_path_is_rejected() {
+    core::assert(
+        trie_error([0xc2, 0x00, 0x01], key: KEY_A) == ProofError::BadRlp,
+    )
+}
+
+#[test]
+fn nodes_that_are_not_two_or_seventeen_item_lists_are_rejected() {
+    core::assert(trie_error([0x80], key: KEY_A) == ProofError::BadRlp)
+    core::assert(trie_error([0xc0], key: KEY_A) == ProofError::BadRlp)
+    core::assert(
+        trie_error([0xc3, 0x80, 0x80, 0x80], key: KEY_A) == ProofError::BadRlp,
+    )
+}
+
+#[test]
+fn branch_value_before_the_key_ends_is_rejected() {
+    var node: [u8; 18] = [0x80; 18]
+    node[0] = 0xd1
+    node[17] = 0x01
+    core::assert(
+        trie_error(node, key: KEY_A) == ProofError::BranchValueOnPath,
+    )
+}
+
+#[test]
+fn empty_branch_slot_proves_absence() {
+    var node: [u8; 18] = [0x80; 18]
+    node[0] = 0xd1
+    core::assert(trie_absent(node, key: KEY_A))
+}
+
+#[test]
+fn child_reference_of_wrong_length_is_rejected() {
+    var node: [u8; 38] = [0x80; 38]
+    node[0] = 0xe5
+    node[11] = 0x94
+    var i: usize = 12
+    while i < 32 {
+        node[i] = 0x11
+        i += 1
+    }
+    core::assert(trie_error(node, key: KEY_A) == ProofError::BadRlp)
+}
+
+#[test]
+fn leaf_whose_value_is_a_list_is_rejected() {
+    let node = leaf_with_full_path(KEY_A, [0xc1, 0x01])
+    core::assert(trie_error(node, key: KEY_A) == ProofError::BadRlp)
+}
+
+#[test]
+fn leaf_with_full_path_is_present_and_decodes() {
+    let node = leaf_with_full_path(KEY_A, [0x81, 0x80])
+    let (root, nodes) = single(node)
+    match verify_trie(root, key: TrieKey::new(KEY_A), nodes) {
+        Result::Ok(Proven::Present(leaf)) => {
+            core::assert(leaf.node == 0)
+            let value = leaf.item.payload(nodes.node(0))
+            core::assert(value.len() == 1)
+            core::assert(value.byte_at(0) == 0x80)
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn storage_values_must_be_canonical_nonzero_integers() {
+    var zero = MemBuffer::new(1)
+    zero[0] = 0x80
+    match decode_storage_value(zero.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var leading_zero = MemBuffer::new(3)
+    leading_zero[0] = 0x82
+    leading_zero[1] = 0x00
+    leading_zero[2] = 0x01
+    match decode_storage_value(leading_zero.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var list = MemBuffer::new(2)
+    list[0] = 0xc1
+    list[1] = 0x01
+    match decode_storage_value(list.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var one = MemBuffer::new(1)
+    one[0] = 0x01
+    match decode_storage_value(one.span()) {
+        Result::Ok(1) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn account_leaves_must_have_four_well_formed_fields() {
+    var three = MemBuffer::new(4)
+    three[0] = 0xc3
+    three[1] = 0x01
+    three[2] = 0x80
+    three[3] = 0x80
+    match decode_account(three.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var short_roots = MemBuffer::new(6)
+    short_roots[0] = 0xc5
+    short_roots[1] = 0x01
+    short_roots[2] = 0x80
+    short_roots[3] = 0x81
+    short_roots[4] = 0xaa
+    short_roots[5] = 0x80
+    match decode_account(short_roots.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn even_length_path_with_nonzero_padding_is_rejected() {
+    core::assert(
+        trie_error([0xc4, 0x82, 0x01, 0x23, 0x01], key: KEY_A) == ProofError::BadHexPrefix,
+    )
+}
+
+fn account_with_nonce(_ nonce_bytes: MemBuffer) -> MemBuffer {
+    let n = nonce_bytes.len()
+    let payload = 1 + n + 1 + 33 + 33
+    var out = MemBuffer::new(2 + payload)
+    out[0] = 0xf8
+    out[1] = payload.downcast_truncate()
+    out[2] = (0x80 + n).downcast_truncate()
+    var i: usize = 0
+    while i < n {
+        out[3 + i] = nonce_bytes[i]
+        i += 1
+    }
+    var at = 3 + n
+    out[at] = 0x80
+    at += 1
+    out[at] = 0xa0
+    out[at + 33] = 0xa0
+    out
+}
+
+#[test]
+fn nonce_must_fit_in_sixty_four_bits() {
+    var max = MemBuffer::new(8)
+    var i: usize = 0
+    while i < 8 {
+        max[i] = 0xff
+        i += 1
+    }
+    match decode_account(account_with_nonce(max).span()) {
+        Result::Ok(account) => core::assert(account.nonce == 0xffffffffffffffff),
+        Result::Err(_) => core::assert(false),
+    }
+    var over = MemBuffer::new(9)
+    over[0] = 0x01
+    match decode_account(account_with_nonce(over).span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn storage_values_longer_than_a_word_or_non_canonical_are_rejected() {
+    var long = MemBuffer::new(34)
+    long[0] = 0xa1
+    long[1] = 0x01
+    match decode_storage_value(long.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var single = MemBuffer::new(2)
+    single[0] = 0x81
+    single[1] = 0x05
+    match decode_storage_value(single.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+}

@@ -1,0 +1,562 @@
+use ingot::fixture_support::load
+use ingot::{verify_trie, NodeList, ProofError, ProofNodes, Proven, Root, TrieKey}
+use std::evm::crypto::keccak256
+
+const K1: u256 = 0x07e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b21
+const K2: u256 = 0x07e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b22
+const K3: u256 = 0x07e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b23
+const K4: u256 = 0x07e5c3a18f7d4b2907e5c3a18f6d4b2907e5c3a18f6d4b2907e5c3a18f6d4b21
+
+const KEY_A: u256 = 0xa000000000000000000000000000000000000000000000000000000000000000
+
+const BIG_INLINE_BRANCH: [u8; 52] = [
+    0xf3,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0xe2,
+    0xa0,
+    0x30,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x07,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+]
+
+const SHORT_CHILD_PARENT: [u8; 50] = [
+    0xf1,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0xa0,
+    0x96,
+    0xe7,
+    0x58,
+    0xd0,
+    0x2b,
+    0x62,
+    0x9f,
+    0x42,
+    0x03,
+    0xd5,
+    0xf2,
+    0x4e,
+    0xb0,
+    0x35,
+    0xdc,
+    0x48,
+    0x0b,
+    0x20,
+    0xda,
+    0xab,
+    0x86,
+    0x73,
+    0xd0,
+    0x63,
+    0x2f,
+    0xec,
+    0x7c,
+    0x07,
+    0x5b,
+    0x8f,
+    0xab,
+    0xae,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+]
+
+const EXT_EMPTY_CHILD: [u8; 35] = [
+    0xe2,
+    0xa0,
+    0x10,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x80,
+]
+
+const EXT_INLINE: [u8; 56] = [
+    0xf7,
+    0xa0,
+    0x10,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0xd5,
+    0x80,
+    0xc2,
+    0x20,
+    0x0a,
+    0xc2,
+    0x20,
+    0x0b,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+]
+
+const EXT_HASHED: [u8; 68] = [
+    0xf8,
+    0x42,
+    0xa0,
+    0x10,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0x90,
+    0x7e,
+    0x5c,
+    0x3a,
+    0x18,
+    0xf6,
+    0xd4,
+    0xb2,
+    0xa0,
+    0x8f,
+    0x78,
+    0x4b,
+    0x1d,
+    0x35,
+    0xa2,
+    0xc3,
+    0xc8,
+    0x2d,
+    0x6b,
+    0x99,
+    0xcc,
+    0x77,
+    0xd4,
+    0x63,
+    0xdf,
+    0xe1,
+    0x99,
+    0x70,
+    0x92,
+    0xb5,
+    0x13,
+    0xa1,
+    0x07,
+    0x19,
+    0x8d,
+    0xa4,
+    0x1b,
+    0xae,
+    0xf0,
+    0x89,
+    0x67,
+]
+
+const BRANCH_HASHED: [u8; 83] = [
+    0xf8,
+    0x51,
+    0x80,
+    0xa0,
+    0x34,
+    0xad,
+    0x79,
+    0x81,
+    0x3e,
+    0xf2,
+    0x42,
+    0x2b,
+    0xbc,
+    0xe9,
+    0x93,
+    0xb9,
+    0x27,
+    0xa6,
+    0x4b,
+    0xb4,
+    0xae,
+    0x29,
+    0xb0,
+    0x7e,
+    0xe3,
+    0xfe,
+    0x3e,
+    0x76,
+    0xa7,
+    0xf2,
+    0x93,
+    0x1f,
+    0x2a,
+    0x53,
+    0x6f,
+    0xba,
+    0xa0,
+    0x5b,
+    0xc6,
+    0x40,
+    0x7b,
+    0xca,
+    0x1c,
+    0x55,
+    0x0c,
+    0x1b,
+    0xdc,
+    0x3a,
+    0xf8,
+    0x7a,
+    0x87,
+    0x78,
+    0x25,
+    0xd0,
+    0xf5,
+    0x48,
+    0x77,
+    0xae,
+    0xf3,
+    0x3a,
+    0x72,
+    0xde,
+    0x16,
+    0x28,
+    0xdf,
+    0x98,
+    0x88,
+    0xd6,
+    0x55,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+]
+
+const LEAF_HASHED_1: [u8; 35] = [
+    0xe2,
+    0x20,
+    0xa0,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+    0x11,
+]
+
+fn list1<const A: usize>(_ a: [u8; A]) -> NodeList {
+    var nodes = NodeList::new()
+    nodes.push(load(a).span())
+    nodes
+}
+
+fn list3<const A: usize, const B: usize, const C: usize>(
+    _ a: [u8; A],
+    _ b: [u8; B],
+    _ c: [u8; C],
+) -> NodeList {
+    var nodes = NodeList::new()
+    nodes.push(load(a).span())
+    nodes.push(load(b).span())
+    nodes.push(load(c).span())
+    nodes
+}
+
+fn root_of<const A: usize>(_ a: [u8; A]) -> Root {
+    Root::new(keccak256(load(a).span()))
+}
+
+fn present_byte(_ root: Root, key: u256, _ nodes: NodeList) -> u8 {
+    match verify_trie(root, key: TrieKey::new(key), nodes) {
+        Result::Ok(Proven::Present(leaf)) => {
+            let value = leaf.item.payload(nodes.node(leaf.node))
+            core::assert(value.len() == 1)
+            value.byte_at(0)
+        },
+        _ => {
+            core::assert(false)
+            0
+        },
+    }
+}
+
+fn is_absent(_ root: Root, key: u256, _ nodes: NodeList) -> bool {
+    match verify_trie(root, key: TrieKey::new(key), nodes) {
+        Result::Ok(proven) => proven.is_absent(),
+        Result::Err(_) => false,
+    }
+}
+
+fn error_of(_ root: Root, key: u256, _ nodes: NodeList) -> ProofError {
+    match verify_trie(root, key: TrieKey::new(key), nodes) {
+        Result::Ok(_) => {
+            core::assert(false)
+            ProofError::BadRlp
+        },
+        Result::Err(error) => error,
+    }
+}
+
+#[test]
+fn extension_into_an_embedded_branch_reaches_embedded_leaves() {
+    let root = root_of(EXT_INLINE)
+    core::assert(present_byte(root, key: K1, list1(EXT_INLINE)) == 0x0a)
+    core::assert(present_byte(root, key: K2, list1(EXT_INLINE)) == 0x0b)
+}
+
+#[test]
+fn empty_slot_in_an_embedded_branch_proves_absence() {
+    core::assert(is_absent(root_of(EXT_INLINE), key: K3, list1(EXT_INLINE)))
+}
+
+#[test]
+fn key_diverging_inside_an_extension_proves_absence() {
+    core::assert(is_absent(root_of(EXT_INLINE), key: K4, list1(EXT_INLINE)))
+}
+
+#[test]
+fn node_after_an_embedded_terminal_is_rejected() {
+    var nodes = list1(EXT_INLINE)
+    nodes.duplicate_last()
+    core::assert(
+        error_of(root_of(EXT_INLINE), key: K1, nodes) == ProofError::TrailingNodes,
+    )
+}
+
+#[test]
+fn extension_into_hashed_nodes_reaches_the_leaf() {
+    let root = root_of(EXT_HASHED)
+    let nodes = list3(EXT_HASHED, BRANCH_HASHED, LEAF_HASHED_1)
+    match verify_trie(root, key: TrieKey::new(K1), nodes) {
+        Result::Ok(Proven::Present(leaf)) => {
+            core::assert(leaf.node == 2)
+            let value = leaf.item.payload(nodes.node(2))
+            core::assert(value.len() == 32)
+            core::assert(
+                value.read_word(0)
+                    == 0x1111111111111111111111111111111111111111111111111111111111111111,
+            )
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn hashed_branch_proves_absence_of_an_unset_slot() {
+    var nodes = list3(EXT_HASHED, BRANCH_HASHED, LEAF_HASHED_1)
+    nodes.drop_last()
+    core::assert(is_absent(root_of(EXT_HASHED), key: K3, nodes))
+}
+
+#[test]
+fn wrong_leaf_under_a_hashed_branch_is_rejected() {
+    let nodes = list3(EXT_HASHED, BRANCH_HASHED, LEAF_HASHED_1)
+    core::assert(
+        error_of(root_of(EXT_HASHED), key: K2, nodes) == ProofError::HashMismatch(2),
+    )
+}
+
+#[test]
+fn extension_with_an_empty_child_is_rejected() {
+    core::assert(
+        error_of(root_of(EXT_EMPTY_CHILD), key: K1, list1(EXT_EMPTY_CHILD)) == ProofError::BadRlp,
+    )
+}
+
+#[test]
+fn embedded_child_of_thirty_two_bytes_is_rejected() {
+    core::assert(
+        error_of(
+                root_of(BIG_INLINE_BRANCH),
+                key: KEY_A,
+                list1(BIG_INLINE_BRANCH),
+            )
+            == ProofError::BadRlp,
+    )
+}
+
+#[test]
+fn hashed_non_root_node_shorter_than_thirty_two_bytes_is_rejected() {
+    let short: [u8; 3] = [0xc2, 0x3a, 0x01]
+    var nodes = list1(SHORT_CHILD_PARENT)
+    nodes.push(load(short).span())
+    core::assert(
+        error_of(root_of(SHORT_CHILD_PARENT), key: KEY_A, nodes) == ProofError::BadRlp,
+    )
+}
+
+#[test]
+fn list_in_the_branch_value_slot_mid_path_is_rejected() {
+    var node: [u8; 19] = [0x80; 19]
+    node[0] = 0xd2
+    node[17] = 0xc1
+    node[18] = 0x01
+    core::assert(
+        error_of(root_of(node), key: KEY_A, list1(node)) == ProofError::BranchValueOnPath,
+    )
+}
