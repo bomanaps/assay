@@ -1,0 +1,243 @@
+use core::{MemArray, MemBuffer, MemSpan, MemVec}
+use std::abi::Bytes
+use std::evm::crypto::keccak256
+use std::evm::rlp::{self, Item}
+use ingot::nibbles::{decode_hex_prefix, key_nibble, path_nibble, KEY_NIBBLES}
+use ingot::{ProofError, Proven, Root, TrieKey}
+
+pub const BRANCH_ITEMS: usize = 17
+pub const BRANCH_VALUE: usize = 16
+pub const PAIR_ITEMS: usize = 2
+pub const HASH_LEN: usize = 32
+pub const MAX_INLINE_PAYLOAD: usize = 30
+
+pub trait ProofNodes {
+    fn count(self) -> usize
+    fn node(self, _ index: usize) -> ref MemSpan
+}
+
+pub struct NodeList { bytes: MemBuffer, offsets: MemVec<usize> }
+
+impl NodeList {
+    pub fn new() -> Self {
+        var offsets = MemVec::new()
+        offsets.push(0)
+        NodeList { bytes: MemBuffer::empty(), offsets }
+    }
+
+    pub fn from_fixture<const N: usize, const M: usize>(
+        _ bytes: [u8; N],
+        _ offsets: [usize; M],
+        first: usize,
+        count: usize,
+    ) -> Self {
+        var list = NodeList::new()
+        var i = first
+        while i < first + count {
+            var node = MemBuffer::new(offsets[i + 1] - offsets[i])
+            var j: usize = 0
+            while j < node.len() {
+                node[j] = bytes[offsets[i] + j]
+                j += 1
+            }
+            list.push(node.span())
+            i += 1
+        }
+        list
+    }
+
+    pub fn push(mut self, _ node: MemSpan) {
+        var i: usize = 0
+        while i < node.len() {
+            self.bytes.push(node.byte_at(i))
+            i += 1
+        }
+        self.offsets.push(self.bytes.len())
+    }
+
+    pub fn drop_last(mut self) {
+        core::assert(self.count() > 0)
+        let start = self.offsets[self.count() - 1]
+        self.offsets.pop()
+        self.bytes.truncate(start)
+    }
+
+    pub fn duplicate_last(mut self) {
+        core::assert(self.count() > 0)
+        let start = self.offsets[self.count() - 1]
+        let len = self.bytes.len() - start
+        var copy = MemBuffer::new(len)
+        var i: usize = 0
+        while i < len {
+            copy[i] = self.bytes[start + i]
+            i += 1
+        }
+        self.push(copy.span())
+    }
+
+    pub fn flip_byte(mut self, node: usize, at: usize) {
+        let start = self.offsets[node]
+        core::assert(start + at < self.offsets[node + 1])
+        self.bytes[start + at] = self.bytes[start + at] ^ 0x01
+    }
+
+    pub fn set_byte(mut self, node: usize, at: usize, value: u8) {
+        let start = self.offsets[node]
+        core::assert(start + at < self.offsets[node + 1])
+        self.bytes[start + at] = value
+    }
+}
+
+impl ProofNodes for NodeList {
+    fn count(self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    fn node(self, _ index: usize) -> ref MemSpan {
+        let start = self.offsets[index]
+        self.bytes.span().slice(offset: start, len: self.offsets[index + 1] - start)
+    }
+}
+
+impl ProofNodes for MemArray<Bytes> {
+    fn count(self) -> usize {
+        self.len()
+    }
+
+    fn node(self, _ index: usize) -> ref MemSpan {
+        self[index].span()
+    }
+}
+
+pub struct Leaf { pub node: usize, pub item: Item }
+
+impl Copy for Leaf {}
+
+pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
+    ProofError,
+    Proven<Leaf>,
+> {
+    var expected = root.value()
+    var position: usize = 0
+    var depth: usize = 0
+    var node_index: usize = 0
+    var current: Option<Item> = Option::None
+    while true {
+        let item = match current {
+            Option::Some(item) => item,
+            Option::None => {
+                if depth >= nodes.count() {
+                    return Result::Err(ProofError::PathExhausted)
+                }
+                node_index = depth
+                depth += 1
+                let span = nodes.node(node_index)
+                if keccak256(span) != expected {
+                    return Result::Err(ProofError::HashMismatch(node_index))
+                }
+                if node_index > 0 && span.len() < HASH_LEN {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                match rlp::decode(span) {
+                    Option::Some(item) => item,
+                    Option::None => {
+                        return Result::Err(ProofError::BadRlp)
+                    },
+                }
+            },
+        }
+        let span = nodes.node(node_index)
+        let items = match item.items(span) {
+            Option::Some(items) => items,
+            Option::None => {
+                return Result::Err(ProofError::BadRlp)
+            },
+        }
+        let remaining = depth < nodes.count()
+        var child = item
+        var from_extension = false
+        if items.len() == BRANCH_ITEMS {
+            if position == KEY_NIBBLES {
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                let value = items[BRANCH_VALUE]
+                if value.is_list() {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                if value.payload(span).len() == 0 {
+                    return Result::Ok(Proven::Absent)
+                }
+                return Result::Ok(Proven::Present(Leaf { node: node_index, item: value }))
+            }
+            if items[BRANCH_VALUE].is_list() || items[BRANCH_VALUE].payload(span).len() != 0 {
+                return Result::Err(ProofError::BranchValueOnPath)
+            }
+            child = items[key_nibble(key.value(), position)]
+            position += 1
+        } else if items.len() == PAIR_ITEMS {
+            if items[0].is_list() {
+                return Result::Err(ProofError::BadRlp)
+            }
+            let encoded = items[0].payload(span)
+            let path = decode_hex_prefix(encoded)?
+            if !path.is_leaf && path.len == 0 {
+                return Result::Err(ProofError::BadRlp)
+            }
+            var matches = position + path.len <= KEY_NIBBLES
+            var i: usize = 0
+            while matches && i < path.len {
+                if path_nibble(path, encoded, i) != key_nibble(key.value(), position + i) {
+                    matches = false
+                }
+                i += 1
+            }
+            if !matches {
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                return Result::Ok(Proven::Absent)
+            }
+            position += path.len
+            if path.is_leaf {
+                if position != KEY_NIBBLES {
+                    return Result::Err(ProofError::KeyNotConsumed)
+                }
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                if items[1].is_list() {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                return Result::Ok(Proven::Present(Leaf { node: node_index, item: items[1] }))
+            }
+            child = items[1]
+            from_extension = true
+        } else {
+            return Result::Err(ProofError::BadRlp)
+        }
+        if child.is_list() {
+            if child.payload(span).len() > MAX_INLINE_PAYLOAD {
+                return Result::Err(ProofError::BadRlp)
+            }
+            current = Option::Some(child)
+            continue
+        }
+        let reference = child.payload(span)
+        if reference.len() == 0 {
+            if from_extension {
+                return Result::Err(ProofError::BadRlp)
+            }
+            if remaining {
+                return Result::Err(ProofError::TrailingNodes)
+            }
+            return Result::Ok(Proven::Absent)
+        }
+        if reference.len() != HASH_LEN {
+            return Result::Err(ProofError::BadRlp)
+        }
+        expected = reference.read_word(0)
+        current = Option::None
+    }
+    Result::Err(ProofError::PathExhausted)
+}

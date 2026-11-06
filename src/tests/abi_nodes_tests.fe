@@ -1,0 +1,122 @@
+use ingot::fixtures::mainnet_storage_usdc as u
+use ingot::{
+    verify_account,
+    verify_storage,
+    NodeList,
+    ProofError,
+    ProofNodes,
+    Proven,
+    StateRoot,
+    StorageRoot,
+}
+use core::{MemArray, MemVec}
+use std::abi::{Bytes, DynArray}
+use std::evm::crypto::keccak256
+
+fn abi_nodes(_ list: NodeList) -> MemArray<Bytes> {
+    var values: MemVec<Bytes> = MemVec::new()
+    var i: usize = 0
+    while i < list.count() {
+        values.push(Bytes::from_payload(source: list.node(i)))
+        i += 1
+    }
+    let encoded: DynArray<Bytes> = DynArray::from_mem_vec(values)
+    encoded.to_mem_array()
+}
+
+#[test]
+fn abi_bytes_array_holds_the_same_nodes() {
+    let list = NodeList::from_fixture(
+        u::ACCOUNT_BYTES,
+        u::ACCOUNT_OFFSETS,
+        first: 0,
+        count: u::ACCOUNT_NODE_COUNT,
+    )
+    let nodes = abi_nodes(list)
+    core::assert(nodes.count() == list.count())
+    var i: usize = 0
+    while i < nodes.count() {
+        core::assert(nodes.node(i).len() == list.node(i).len())
+        core::assert(keccak256(nodes.node(i)) == keccak256(list.node(i)))
+        i += 1
+    }
+}
+
+#[test]
+fn abi_node_spans_stay_valid_after_other_allocations() {
+    let list = NodeList::from_fixture(
+        u::ACCOUNT_BYTES,
+        u::ACCOUNT_OFFSETS,
+        first: 0,
+        count: u::ACCOUNT_NODE_COUNT,
+    )
+    let nodes = abi_nodes(list)
+    let before = keccak256(nodes.node(0))
+    var i: usize = 0
+    while i < 8 {
+        let filler = Bytes::zeroed(nodes.node(0).len())
+        core::assert(filler.len() == nodes.node(0).len())
+        i += 1
+    }
+    core::assert(keccak256(nodes.node(0)) == before)
+    core::assert(before == u::STATE_ROOT)
+}
+
+#[test]
+fn account_verifies_through_an_abi_bytes_array() {
+    let list = NodeList::from_fixture(
+        u::ACCOUNT_BYTES,
+        u::ACCOUNT_OFFSETS,
+        first: 0,
+        count: u::ACCOUNT_NODE_COUNT,
+    )
+    match verify_account(
+        state_root: StateRoot::new(u::STATE_ROOT),
+        u::ADDRESS_BYTES,
+        nodes: abi_nodes(list),
+    ) {
+        Result::Ok(Proven::Present(account)) => {
+            core::assert(account.nonce == u::NONCE)
+            core::assert(account.balance == u::BALANCE)
+            core::assert(account.storage_root == StorageRoot::new(u::STORAGE_ROOT))
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn storage_verifies_through_an_abi_bytes_array() {
+    let list = NodeList::from_fixture(
+        u::SLOT_BYTES,
+        u::SLOT_OFFSETS,
+        first: 0,
+        count: u::SLOT_NODE_COUNTS[0],
+    )
+    match verify_storage(
+        storage_root: StorageRoot::new(u::STORAGE_ROOT),
+        slot: u::SLOT_KEYS[0],
+        nodes: abi_nodes(list),
+    ) {
+        Result::Ok(value) => core::assert(value == u::SLOT_VALUES[0]),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn corrupted_abi_bytes_array_is_rejected_at_the_right_depth() {
+    var list = NodeList::from_fixture(
+        u::ACCOUNT_BYTES,
+        u::ACCOUNT_OFFSETS,
+        first: 0,
+        count: u::ACCOUNT_NODE_COUNT,
+    )
+    list.flip_byte(node: 2, at: 9)
+    match verify_account(
+        state_root: StateRoot::new(u::STATE_ROOT),
+        u::ADDRESS_BYTES,
+        nodes: abi_nodes(list),
+    ) {
+        Result::Err(ProofError::HashMismatch(2)) => core::assert(true),
+        _ => core::assert(false),
+    }
+}

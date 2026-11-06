@@ -37,11 +37,9 @@ fn empty_code_hash_is_keccak_of_nothing() {
 #[test]
 fn empty_storage_root_is_keccak_of_rlp_empty_string() {
     let encoded = rlp::encode_bytes(MemBuffer::new(0).span())
-    core::assert(encoded.payload_span().len() == 1)
-    core::assert(encoded.payload_span().byte_at(0) == 0x80)
-    core::assert(
-        keccak256_word(encoded.payload_span()) == EMPTY_STORAGE_ROOT,
-    )
+    core::assert(encoded.span().len() == 1)
+    core::assert(encoded.span().byte_at(0) == 0x80)
+    core::assert(keccak256_word(encoded.span()) == EMPTY_STORAGE_ROOT)
 }
 
 #[test]
@@ -212,7 +210,7 @@ fn proven_works_over_account_state() {
 
 #[test]
 fn proof_errors_equal_only_themselves() {
-    let errors: [ProofError; 8] = [
+    let errors: [ProofError; 9] = [
         ProofError::BadRlp,
         ProofError::HashMismatch(3),
         ProofError::PathExhausted,
@@ -221,11 +219,12 @@ fn proof_errors_equal_only_themselves() {
         ProofError::BranchValueOnPath,
         ProofError::DepthOutOfRange,
         ProofError::GIndexMismatch,
+        ProofError::KeyNotConsumed,
     ]
     var i: usize = 0
-    while i < 8 {
+    while i < 9 {
         var j: usize = 0
-        while j < 8 {
+        while j < 9 {
             core::assert((errors[i] == errors[j]) == (i == j))
             j += 1
         }

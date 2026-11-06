@@ -12,7 +12,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FE_COMMIT: 3371dfd35e201a1fe077d1f1ccb62dbeec6e4808
+  FE_COMMIT: b182b0126bbe535433c2698e0fdc96e3899931c7
+  SONATINA_BASE: 279793642564e781846bdea1561825f64aee300a
+  SONATINA_COMMIT: 63acfe542a255ad1f57f9995348b7b2c99680729
 
 jobs:
   test:
@@ -41,6 +43,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
+      - name: Point Fe at the Sonatina commit that carries the GVN fix from fe-lang/sonatina#488
+        working-directory: fe
+        run: |
+          test "$(grep -c "$SONATINA_BASE" Cargo.toml)" -ge 1
+          sed -i "s/$SONATINA_BASE/$SONATINA_COMMIT/g" Cargo.toml
+          test "$(grep -c "$SONATINA_BASE" Cargo.toml)" -eq 0
       - name: Generate tree-sitter parser
         working-directory: fe/crates/tree-sitter-fe
         run: |
@@ -53,7 +61,7 @@ jobs:
           workspaces: fe
           cache-on-failure: true
       - name: Build Fe
-        run: cargo build --locked --release -p fe --features cranelift --manifest-path fe/Cargo.toml
+        run: cargo build --release -p fe --features cranelift --manifest-path fe/Cargo.toml
       - name: Fe version
         run: fe/target/release/fe --version
       - name: Format check
@@ -62,5 +70,7 @@ jobs:
         run: fe/target/release/fe check
       - name: Tests on the EVM backend
         run: fe/target/release/fe test
+      - name: Tests on the EVM backend at -O 2
+        run: fe/target/release/fe test -O 2
       - name: Tests on the native backend
         run: fe/target/release/fe test --backend native

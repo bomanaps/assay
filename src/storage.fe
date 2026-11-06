@@ -1,0 +1,45 @@
+use core::{MemBuffer, MemSpan}
+use std::evm::crypto::keccak256
+use std::evm::rlp
+use ingot::mpt::{verify_trie, ProofNodes, HASH_LEN}
+use ingot::{ProofError, Proven, StorageRoot, TrieKey, EMPTY_STORAGE_ROOT}
+
+pub fn storage_key(_ slot: u256) -> TrieKey {
+    var buffer = MemBuffer::new(HASH_LEN)
+    buffer.write_word(offset: 0, value: slot)
+    TrieKey::new(keccak256(buffer.span()))
+}
+
+pub fn decode_storage_value(_ encoded: MemSpan) -> Result<ProofError, u256> {
+    let item = match rlp::decode(encoded) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    match item.as_uint(encoded) {
+        Option::Some(0) => Result::Err(ProofError::BadRlp),
+        Option::Some(value) => Result::Ok(value),
+        Option::None => Result::Err(ProofError::BadRlp),
+    }
+}
+
+pub fn verify_storage<P: ProofNodes>(storage_root: StorageRoot, slot: u256, nodes: P) -> Result<
+    ProofError,
+    u256,
+> {
+    if storage_root.value() == EMPTY_STORAGE_ROOT {
+        if nodes.count() != 0 {
+            return Result::Err(ProofError::TrailingNodes)
+        }
+        return Result::Ok(0)
+    }
+    match verify_trie(
+        root: storage_root.as_root(),
+        key: storage_key(slot),
+        nodes,
+    )? {
+        Proven::Present(leaf) => decode_storage_value(leaf.item.payload(nodes.node(leaf.node))),
+        Proven::Absent => Result::Ok(0),
+    }
+}

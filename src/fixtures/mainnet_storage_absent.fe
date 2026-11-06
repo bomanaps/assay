@@ -3895,6 +3895,7 @@ pub const SLOT_INLINE: [bool; 1] = [false]
 pub const SLOT_PRESENT: [bool; 1] = [false]
 pub const SLOT_VALUES: [u256; 1] = [0]
 pub const SLOT_NODE_STARTS: [usize; 2] = [0, 6]
+pub const SLOT_NODE_COUNTS: [usize; 1] = [6]
 pub const SLOT_OFFSETS: [usize; 7] = [0, 532, 1064, 1596, 2128, 2660, 3096]
 pub const SLOT_BYTES: [u8; 3096] = [
     0xf9,
