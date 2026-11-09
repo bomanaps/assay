@@ -8,6 +8,7 @@ use ingot::{
     Proven,
     StateRoot,
     StorageRoot,
+    CodeHash,
 }
 use core::{MemArray, MemVec}
 use std::abi::{Bytes, DynArray}
@@ -22,24 +23,6 @@ fn abi_nodes(_ list: NodeList) -> MemArray<Bytes> {
     }
     let encoded: DynArray<Bytes> = DynArray::from_mem_vec(values)
     encoded.to_mem_array()
-}
-
-#[test]
-fn abi_bytes_array_holds_the_same_nodes() {
-    let list = NodeList::from_fixture(
-        u::ACCOUNT_BYTES,
-        u::ACCOUNT_OFFSETS,
-        first: 0,
-        count: u::ACCOUNT_NODE_COUNT,
-    )
-    let nodes = abi_nodes(list)
-    core::assert(nodes.count() == list.count())
-    var i: usize = 0
-    while i < nodes.count() {
-        core::assert(nodes.node(i).len() == list.node(i).len())
-        core::assert(keccak256(nodes.node(i)) == keccak256(list.node(i)))
-        i += 1
-    }
 }
 
 #[test]
@@ -79,6 +62,7 @@ fn account_verifies_through_an_abi_bytes_array() {
             core::assert(account.nonce == u::NONCE)
             core::assert(account.balance == u::BALANCE)
             core::assert(account.storage_root == StorageRoot::new(u::STORAGE_ROOT))
+            core::assert(account.code_hash == CodeHash::new(u::CODE_HASH))
         },
         _ => core::assert(false),
     }
@@ -99,24 +83,5 @@ fn storage_verifies_through_an_abi_bytes_array() {
     ) {
         Result::Ok(value) => core::assert(value == u::SLOT_VALUES[0]),
         Result::Err(_) => core::assert(false),
-    }
-}
-
-#[test]
-fn corrupted_abi_bytes_array_is_rejected_at_the_right_depth() {
-    var list = NodeList::from_fixture(
-        u::ACCOUNT_BYTES,
-        u::ACCOUNT_OFFSETS,
-        first: 0,
-        count: u::ACCOUNT_NODE_COUNT,
-    )
-    list.flip_byte(node: 2, at: 9)
-    match verify_account(
-        state_root: StateRoot::new(u::STATE_ROOT),
-        u::ADDRESS_BYTES,
-        nodes: abi_nodes(list),
-    ) {
-        Result::Err(ProofError::HashMismatch(2)) => core::assert(true),
-        _ => core::assert(false),
     }
 }

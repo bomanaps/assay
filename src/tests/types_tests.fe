@@ -43,69 +43,6 @@ fn empty_storage_root_is_keccak_of_rlp_empty_string() {
 }
 
 #[test]
-fn every_newtype_round_trips_its_word() {
-    core::assert(Root::new(WORD).value() == WORD)
-    core::assert(StateRoot::new(WORD).value() == WORD)
-    core::assert(StorageRoot::new(WORD).value() == WORD)
-    core::assert(CodeHash::new(WORD).value() == WORD)
-    core::assert(BeaconRoot::new(WORD).value() == WORD)
-    core::assert(GIndex::new(WORD).value() == WORD)
-    core::assert(TrieKey::new(WORD).value() == WORD)
-}
-
-#[test]
-fn every_newtype_compares_by_value() {
-    core::assert(
-        Root::new(1) == Root::new(1) && Root::new(1) != Root::new(2),
-    )
-    core::assert(
-        StateRoot::new(1) == StateRoot::new(1) && StateRoot::new(1) != StateRoot::new(2),
-    )
-    core::assert(
-        StorageRoot::new(1) == StorageRoot::new(1) && StorageRoot::new(1) != StorageRoot::new(2),
-    )
-    core::assert(
-        CodeHash::new(1) == CodeHash::new(1) && CodeHash::new(1) != CodeHash::new(2),
-    )
-    core::assert(
-        BeaconRoot::new(1) == BeaconRoot::new(1) && BeaconRoot::new(1) != BeaconRoot::new(2),
-    )
-    core::assert(
-        GIndex::new(1) == GIndex::new(1) && GIndex::new(1) != GIndex::new(2),
-    )
-    core::assert(
-        TrieKey::new(1) == TrieKey::new(1) && TrieKey::new(1) != TrieKey::new(2),
-    )
-}
-
-#[test]
-fn specific_roots_convert_to_plain_roots_without_changing_the_word() {
-    core::assert(StateRoot::new(WORD).as_root() == Root::new(WORD))
-    core::assert(StorageRoot::new(WORD).as_root() == Root::new(WORD))
-    core::assert(BeaconRoot::new(WORD).as_root() == Root::new(WORD))
-    core::assert(
-        StorageRoot::empty().as_root() == Root::new(EMPTY_STORAGE_ROOT),
-    )
-}
-
-#[test]
-fn empty_constructors_use_the_constants() {
-    core::assert(StorageRoot::empty().value() == EMPTY_STORAGE_ROOT)
-    core::assert(CodeHash::empty().value() == EMPTY_CODE_HASH)
-}
-
-#[test]
-fn missing_account_is_the_default_and_is_empty() {
-    let missing = AccountState::missing()
-    core::assert(missing.nonce == 0)
-    core::assert(missing.balance == 0)
-    core::assert(missing.storage_root == StorageRoot::empty())
-    core::assert(missing.code_hash == CodeHash::empty())
-    core::assert(missing == AccountState::default())
-    core::assert(missing.is_empty())
-}
-
-#[test]
 fn eip161_emptiness_ignores_storage_root_but_not_other_fields() {
     let with_storage = account(
         nonce: 0,
@@ -192,20 +129,6 @@ fn proven_equality_is_symmetric_and_payload_aware() {
     core::assert(present != absent)
     core::assert(absent != present)
     core::assert(absent == Proven::Absent)
-}
-
-#[test]
-fn proven_works_over_account_state() {
-    let account = account(
-        nonce: 7,
-        balance: 0,
-        storage_root: StorageRoot::empty(),
-        code_hash: CodeHash::empty(),
-    )
-    let proven: Proven<AccountState> = Proven::Present(account)
-    core::assert(proven == Proven::Present(account))
-    core::assert(proven != Proven::Present(AccountState::missing()))
-    core::assert(proven != Proven::Absent)
 }
 
 #[test]

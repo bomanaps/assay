@@ -80,12 +80,6 @@ impl NodeList {
         core::assert(start + at < self.offsets[node + 1])
         self.bytes[start + at] = self.bytes[start + at] ^ 0x01
     }
-
-    pub fn set_byte(mut self, node: usize, at: usize, value: u8) {
-        let start = self.offsets[node]
-        core::assert(start + at < self.offsets[node + 1])
-        self.bytes[start + at] = value
-    }
 }
 
 impl ProofNodes for NodeList {

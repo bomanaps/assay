@@ -1,5 +1,9 @@
+pub use chain_beacon::{self}
+pub use chain_storage_usdc::{self}
+pub use chain_storage_weth::{self}
 pub use mainnet_account_absent::{self}
 pub use mainnet_account_eoa::{self}
 pub use mainnet_storage_absent::{self}
 pub use mainnet_storage_usdc::{self}
 pub use mainnet_storage_weth::{self}
+pub use validator_beacon::{self}

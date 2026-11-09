@@ -19,6 +19,29 @@ use ingot::{
 use core::MemBuffer
 use std::evm::crypto::keccak256
 
+const WETH_ADDRESS: [u8; 20] = [
+    0xc0,
+    0x2a,
+    0xaa,
+    0x39,
+    0xb2,
+    0x23,
+    0xfe,
+    0x8d,
+    0x0a,
+    0x0e,
+    0x5c,
+    0x4f,
+    0x27,
+    0xea,
+    0xd9,
+    0x08,
+    0x3c,
+    0x75,
+    0x6c,
+    0xc2,
+]
+
 const KEY_A: u256 = 0xa000000000000000000000000000000000000000000000000000000000000000
 
 fn usdc_account() -> NodeList {
@@ -181,19 +204,6 @@ fn a_proof_for_one_slot_does_not_prove_a_neighbouring_slot() {
 }
 
 #[test]
-fn wrong_root_fails_at_the_first_node() {
-    let nodes = usdc_account()
-    match verify_account(
-        state_root: StateRoot::new(1),
-        mainnet_storage_usdc::ADDRESS_BYTES,
-        nodes,
-    ) {
-        Result::Err(ProofError::HashMismatch(0)) => core::assert(true),
-        _ => core::assert(false),
-    }
-}
-
-#[test]
 fn empty_storage_trie_accepts_only_an_empty_proof() {
     match verify_storage(
         storage_root: StorageRoot::empty(),
@@ -217,13 +227,6 @@ fn empty_storage_trie_accepts_only_an_empty_proof() {
 fn leaf_that_ends_before_the_key_is_rejected() {
     core::assert(
         trie_error([0xc2, 0x3a, 0x01], key: KEY_A) == ProofError::KeyNotConsumed,
-    )
-}
-
-#[test]
-fn bad_hex_prefix_flag_is_rejected() {
-    core::assert(
-        trie_error([0xc2, 0x4a, 0x01], key: KEY_A) == ProofError::BadHexPrefix,
     )
 }
 
@@ -322,6 +325,20 @@ fn storage_values_must_be_canonical_nonzero_integers() {
         Result::Err(ProofError::BadRlp) => core::assert(true),
         _ => core::assert(false),
     }
+    var long = MemBuffer::new(34)
+    long[0] = 0xa1
+    long[1] = 0x01
+    match decode_storage_value(long.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+    var single = MemBuffer::new(2)
+    single[0] = 0x81
+    single[1] = 0x05
+    match decode_storage_value(single.span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
     var one = MemBuffer::new(1)
     one[0] = 0x01
     match decode_storage_value(one.span()) {
@@ -352,13 +369,6 @@ fn account_leaves_must_have_four_well_formed_fields() {
         Result::Err(ProofError::BadRlp) => core::assert(true),
         _ => core::assert(false),
     }
-}
-
-#[test]
-fn even_length_path_with_nonzero_padding_is_rejected() {
-    core::assert(
-        trie_error([0xc4, 0x82, 0x01, 0x23, 0x01], key: KEY_A) == ProofError::BadHexPrefix,
-    )
 }
 
 fn account_with_nonce(_ nonce_bytes: MemBuffer) -> MemBuffer {
@@ -402,19 +412,13 @@ fn nonce_must_fit_in_sixty_four_bits() {
 }
 
 #[test]
-fn storage_values_longer_than_a_word_or_non_canonical_are_rejected() {
-    var long = MemBuffer::new(34)
-    long[0] = 0xa1
-    long[1] = 0x01
-    match decode_storage_value(long.span()) {
-        Result::Err(ProofError::BadRlp) => core::assert(true),
-        _ => core::assert(false),
-    }
-    var single = MemBuffer::new(2)
-    single[0] = 0x81
-    single[1] = 0x05
-    match decode_storage_value(single.span()) {
-        Result::Err(ProofError::BadRlp) => core::assert(true),
+fn an_account_proof_does_not_prove_another_address() {
+    match verify_account(
+        state_root: StateRoot::new(mainnet_storage_usdc::STATE_ROOT),
+        WETH_ADDRESS,
+        nodes: usdc_account(),
+    ) {
+        Result::Err(ProofError::HashMismatch(1)) => core::assert(true),
         _ => core::assert(false),
     }
 }

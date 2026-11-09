@@ -1,9 +1,4 @@
-pub const CHAIN_ID: u64 = 1
-pub const BLOCK_NUMBER: u64 = 26349018
-pub const BLOCK_HASH: u256 = 0x64263cb1acdb66cee43243768908cf80a027b46de022a342fe0b56a2b765508a
-pub const BLOCK_TIMESTAMP: u64 = 1793886347
 pub const STATE_ROOT: u256 = 0xd997f307cf812f893d2d10d5eff7fc0be554a29d6768fdaed1ed901b00c7009d
-pub const ADDRESS: u256 = 0xd8da6bf26964af9d7eed9e03e53415d37aa96045
 pub const ADDRESS_BYTES: [u8; 20] = [
     0xd8,
     0xda,
@@ -26,14 +21,12 @@ pub const ADDRESS_BYTES: [u8; 20] = [
     0x60,
     0x45,
 ]
-pub const ACCOUNT_PATH: u256 = 0x06e120c2c3547c60ee47f712d32e5acf38b35d1cc62e23b055a69bb88284c281
 pub const ACCOUNT_PRESENT: bool = true
 pub const NONCE: u64 = 5970
 pub const BALANCE: u256 = 5780441042197210512
 pub const STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
 pub const CODE_HASH: u256 = 0xd8ef78646344da0ceb69cbcdb306939b3ba0514174fa28b6c6fa189953ff226d
 pub const ACCOUNT_NODE_COUNT: usize = 9
-pub const ACCOUNT_INLINE: bool = false
 pub const ACCOUNT_OFFSETS: [usize; 10] = [0, 532, 1064, 1596, 2128, 2660, 3192, 3564, 3647, 3761]
 pub const ACCOUNT_BYTES: [u8; 3761] = [
     0xf9,
@@ -3798,10 +3791,7 @@ pub const ACCOUNT_BYTES: [u8; 3761] = [
     0x22,
     0x6d,
 ]
-pub const SLOT_COUNT: usize = 0
 pub const SLOT_KEYS: [u256; 0] = []
-pub const SLOT_PATHS: [u256; 0] = []
-pub const SLOT_INLINE: [bool; 0] = []
 pub const SLOT_PRESENT: [bool; 0] = []
 pub const SLOT_VALUES: [u256; 0] = []
 pub const SLOT_NODE_STARTS: [usize; 1] = [0]

@@ -218,17 +218,27 @@ def walk(root, key, nodes):
 
 
 def to_int(hex_text):
-    return int(hex_text, 16)
+    if not isinstance(hex_text, str) or not hex_text.startswith("0x") or len(hex_text) < 3:
+        raise ProofError(f"{hex_text!r} is not a 0x-prefixed quantity")
+    digits = hex_text[2:]
+    if not set(digits) <= HEX_DIGITS or (len(digits) > 1 and digits[0] == "0"):
+        raise ProofError(f"{hex_text} is not a canonical quantity")
+    return int(digits, 16)
+
+
+HEX_DIGITS = set("0123456789abcdef")
 
 
 def hex_bytes(text, length=None):
-    digits = text[2:] if text.startswith("0x") else text
-    if length is not None:
-        if len(digits) > 2 * length:
-            raise ProofError(f"{text} is longer than {length} bytes")
-        digits = digits.rjust(2 * length, "0")
+    if not isinstance(text, str) or not text.startswith("0x"):
+        raise ProofError(f"{text!r} is not 0x-prefixed hex")
+    digits = text[2:]
+    if not set(digits) <= HEX_DIGITS:
+        raise ProofError(f"{text} is not lowercase hex")
     if len(digits) % 2:
         raise ProofError(f"odd length hex {text}")
+    if length is not None and len(digits) != 2 * length:
+        raise ProofError(f"{text} is not exactly {length} bytes")
     return bytes.fromhex(digits)
 
 
@@ -274,9 +284,20 @@ def check_header(header):
     return encoded
 
 
+MPT_KINDS = ("account", "storage")
+
+
 def analyze(fixture):
+    kind = fixture.get("kind")
+    if kind not in MPT_KINDS:
+        raise ProofError(f"not a trie fixture: kind {kind!r}")
     header = fixture["header"]
     proof = fixture["proof"]
+    if (kind == "storage") != bool(proof["storageProof"]):
+        raise ProofError(f"kind {kind} does not match {len(proof['storageProof'])} storage proofs")
+    chain_id = fixture["chainId"]
+    if not isinstance(chain_id, int) or chain_id <= 0:
+        raise ProofError(f"chain id {chain_id!r} is not a positive integer")
     header_rlp = check_header(header)
     state_root = hex_bytes(header["stateRoot"], 32)
     address = hex_bytes(proof["address"], 20)
@@ -341,6 +362,9 @@ def analyze(fixture):
         )
 
     return {
+        "chain_id": chain_id,
+        "block_number": to_int(header["number"]),
+        "block_hash": hex_bytes(header["hash"], 32),
         "header_rlp": header_rlp,
         "state_root": state_root,
         "address": address,
@@ -378,12 +402,15 @@ def main(argv):
     failures = 0
     for text in argv[1:]:
         path = pathlib.Path(text)
-        fixture = json.loads(path.read_text())
         try:
+            fixture = json.loads(path.read_text())
+            if fixture.get("kind") not in MPT_KINDS:
+                print(f"skip {path.name}: kind {fixture.get('kind')}")
+                continue
             for line in check_fixture(fixture):
                 print(f"ok   {path.name}: {line}")
-        except ProofError as e:
-            print(f"FAIL {path.name}: {e}")
+        except (ProofError, KeyError, TypeError, ValueError) as e:
+            print(f"FAIL {path.name}: {type(e).__name__}: {e}")
             failures += 1
     if failures:
         raise SystemExit(1)
