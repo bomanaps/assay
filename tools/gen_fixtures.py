@@ -22,6 +22,12 @@ and SLOT_NODE_COUNTS gives the number of nodes per slot.
 ACCOUNT_PATH and SLOT_PATHS are the keccak hashed trie keys the oracle walked.
 The oracle also verifies that the header hashes to BLOCK_HASH before any
 constant is written, so the state root is bound to the block.
+
+Beacon fixtures (kind beacon_chain or beacon_validator) are checked by
+oracle_ssz.py first. Their modules hold the beacon header fields, BLOCK_ROOT,
+and for every proven field a <FIELD>_GINDEX, <FIELD>_LEAF, <FIELD>_DEPTH and
+<FIELD>_BRANCH, the branch ordered from the leaf's sibling up to the root's
+child. A leaf or sibling is the 32-byte chunk read as a big-endian word.
 """
 
 import json
@@ -31,6 +37,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import oracle_mpt
+import oracle_ssz
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "fixtures"
@@ -118,6 +125,61 @@ def render(fixture):
     return "".join(parts)
 
 
+BEACON_FIELD_NAMES = {
+    "execution_payload.state_root": "PAYLOAD_STATE_ROOT",
+    "execution_payload.block_number": "PAYLOAD_BLOCK_NUMBER",
+    "execution_payload.block_hash": "PAYLOAD_BLOCK_HASH",
+    "withdrawal_credentials": "WITHDRAWAL_CREDENTIALS",
+    "effective_balance": "EFFECTIVE_BALANCE",
+}
+
+
+def proof_constants(proof, prefix):
+    branch = proof["branch"]
+    return [
+        f"pub const {prefix}_GINDEX: u256 = {int(proof['gindex'])}\n",
+        f"pub const {prefix}_LEAF: u256 = {proof['leaf']}\n",
+        f"pub const {prefix}_DEPTH: usize = {len(branch)}\n",
+        word_array(f"{prefix}_BRANCH", branch),
+    ]
+
+
+def render_beacon(fixture):
+    oracle_ssz.check_fixture(fixture)
+    beacon = fixture["beacon"]
+    header = beacon["header"]
+    parts = [
+        f"pub const BLOCK_ROOT: u256 = {beacon['blockRoot']}\n",
+        f"pub const SLOT: u64 = {int(header['slot'])}\n",
+        f"pub const PROPOSER_INDEX: u64 = {int(header['proposer_index'])}\n",
+        f"pub const PARENT_ROOT: u256 = {header['parent_root']}\n",
+        f"pub const HEADER_STATE_ROOT: u256 = {header['state_root']}\n",
+        f"pub const BODY_ROOT: u256 = {header['body_root']}\n",
+    ]
+    if fixture["kind"] == "beacon_chain":
+        execution = fixture["execution"]
+        parts += [
+            f"pub const EXEC_BLOCK_NUMBER: u64 = {int(execution['header']['number'], 16)}\n",
+            f"pub const EXEC_BLOCK_HASH: u256 = {execution['header']['hash']}\n",
+            f"pub const EXEC_STATE_ROOT: u256 = {execution['header']['stateRoot']}\n",
+            f"pub const CHILD_BLOCK_NUMBER: u64 = {int(execution['childHeader']['number'], 16)}\n",
+            f"pub const CHILD_TIMESTAMP: u64 = {int(execution['childHeader']['timestamp'], 16)}\n",
+        ]
+        prefix_of = lambda field: BEACON_FIELD_NAMES[field]
+    else:
+        index = int(fixture["validatorIndex"])
+        validator = fixture["validator"]
+        parts += [
+            f"pub const VALIDATOR_INDEX: u64 = {index}\n",
+            f"pub const WITHDRAWAL_CREDENTIALS: u256 = {validator['withdrawal_credentials']}\n",
+            f"pub const EFFECTIVE_BALANCE: u64 = {int(validator['effective_balance'])}\n",
+        ]
+        prefix_of = lambda field: BEACON_FIELD_NAMES[field.removeprefix(f"validators[{index}].")]
+    for proof in sorted(fixture["proofs"], key=lambda p: p["field"]):
+        parts += proof_constants(proof, prefix_of(proof["field"]))
+    return "".join(parts)
+
+
 def expected_files():
     files = {}
     names = []
@@ -128,7 +190,10 @@ def expected_files():
             raise SystemExit(f"error: {path} holds fixture named {name}")
         if not name.isidentifier() or not name.islower():
             raise SystemExit(f"error: {name} is not a lowercase Fe module name")
-        files[OUT_DIR / f"{name}.fe"] = render(fixture)
+        if fixture.get("kind") in ("beacon_chain", "beacon_validator"):
+            files[OUT_DIR / f"{name}.fe"] = render_beacon(fixture)
+        else:
+            files[OUT_DIR / f"{name}.fe"] = render(fixture)
         names.append(name)
     files[INDEX] = "".join(f"pub use {name}::{{self}}\n" for name in names)
     return files
@@ -173,7 +238,7 @@ def main(argv):
             generate()
         else:
             check()
-    except oracle_mpt.ProofError as e:
+    except (oracle_mpt.ProofError, oracle_ssz.CheckError) as e:
         raise SystemExit(f"error: oracle rejected a fixture: {e}")
 
 
