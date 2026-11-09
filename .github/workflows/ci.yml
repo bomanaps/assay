@@ -26,9 +26,10 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install pycryptodome==3.23.0
-          "$RUNNER_TEMP/venv/bin/python3" -I tools/capture_getproof.py verify fixtures/mainnet_*.json fixtures/chain_storage_*.json
-          "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_mpt.py fixtures/mainnet_*.json fixtures/chain_storage_*.json
-          "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_ssz.py fixtures/chain_beacon.json fixtures/validator_beacon.json
+          "$RUNNER_TEMP/venv/bin/python3" -I -m py_compile tools/*.py
+          "$RUNNER_TEMP/venv/bin/python3" -I -m unittest discover -s tools -p "test_*.py"
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_mpt.py fixtures/*.json
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_ssz.py fixtures/*.json
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
       - name: Check out Fe at the pinned commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

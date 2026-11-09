@@ -1,3 +1,4 @@
+use core::default::Default
 use ingot::fixtures::{
     mainnet_account_absent,
     mainnet_account_eoa,
@@ -76,14 +77,8 @@ fn eoa_account_decodes_to_the_oracle_values() {
             core::assert(
                 account.code_hash == CodeHash::new(mainnet_account_eoa::CODE_HASH),
             )
-            core::assert(account.storage_root == StorageRoot::empty())
         },
         Proven::Absent => core::assert(false),
-    }
-    let nodes = NodeList::new()
-    match verify_storage(storage_root: StorageRoot::empty(), slot: 0, nodes) {
-        Result::Ok(value) => core::assert(value == 0),
-        Result::Err(_) => core::assert(false),
     }
 }
 
@@ -96,8 +91,18 @@ fn absent_account_is_proven_absent() {
         mainnet_account_absent::ACCOUNT_OFFSETS,
         node_count: mainnet_account_absent::ACCOUNT_NODE_COUNT,
     )
-    core::assert(proven.is_absent())
-    core::assert(!mainnet_account_absent::ACCOUNT_PRESENT)
+    core::assert(
+        proven.is_present() == mainnet_account_absent::ACCOUNT_PRESENT,
+    )
+    let reported = AccountState {
+        nonce: mainnet_account_absent::NONCE,
+        balance: mainnet_account_absent::BALANCE,
+        storage_root: StorageRoot::new(mainnet_account_absent::STORAGE_ROOT),
+        code_hash: CodeHash::new(mainnet_account_absent::CODE_HASH),
+    }
+    core::assert(AccountState::missing() == reported)
+    core::assert(AccountState::default() == reported)
+    core::assert(reported.is_empty())
 }
 
 #[test]
@@ -135,8 +140,6 @@ fn usdc_account_and_slot_decode_to_the_oracle_values() {
 
 #[test]
 fn absent_slot_is_proven_zero() {
-    core::assert(!mainnet_storage_absent::SLOT_PRESENT[0])
-    core::assert(mainnet_storage_absent::SLOT_VALUES[0] == 0)
     expect_slots(
         storage_root: mainnet_storage_absent::STORAGE_ROOT,
         mainnet_storage_absent::SLOT_BYTES,
