@@ -251,8 +251,9 @@ pub enum ProofError {
     BadHexPrefix,
     BranchValueOnPath,
     DepthOutOfRange,
-    GIndexMismatch,
+    RootMismatch,
     KeyNotConsumed,
+    IndexOutOfRange,
 }
 
 impl Copy for ProofError {}
@@ -267,8 +268,9 @@ impl Eq for ProofError {
             (Self::BadHexPrefix, Self::BadHexPrefix) => true,
             (Self::BranchValueOnPath, Self::BranchValueOnPath) => true,
             (Self::DepthOutOfRange, Self::DepthOutOfRange) => true,
-            (Self::GIndexMismatch, Self::GIndexMismatch) => true,
+            (Self::RootMismatch, Self::RootMismatch) => true,
             (Self::KeyNotConsumed, Self::KeyNotConsumed) => true,
+            (Self::IndexOutOfRange, Self::IndexOutOfRange) => true,
             _ => false,
         }
     }

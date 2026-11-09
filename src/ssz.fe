@@ -1,0 +1,126 @@
+use core::{MemBuffer, MemSpan, MemVec}
+use core::hash::sha256_word
+use core::panics::PANIC_ASSERT
+use core::ptr::MemSlice
+use std::evm::merkle::ProofNodes
+use ingot::{GIndex, ProofError, Root}
+
+pub const MAX_BRANCH_DEPTH: usize = 64
+
+pub const fn bit_length(_ value: u256) -> u256 {
+    var length: u256 = 0
+    var rest = value
+    while rest > 0 {
+        rest >>= 1
+        length += 1
+    }
+    length
+}
+
+pub const fn depth_for(_ fields: u256) -> u256 {
+    var depth: u256 = 0
+    while (1 << depth) < fields {
+        depth += 1
+    }
+    depth
+}
+
+pub const fn field(_ fields: u256, _ index: u256) -> u256 {
+    if index >= fields {
+        core::panic_code(PANIC_ASSERT)
+    }
+    (1 << depth_for(fields)) + index
+}
+
+pub const fn concat(_ outer: u256, _ inner: u256) -> u256 {
+    if outer == 0 || inner == 0 {
+        core::panic_code(PANIC_ASSERT)
+    }
+    let shift = bit_length(inner) - 1
+    (outer << shift) | (inner - (1 << shift))
+}
+
+pub fn software_hash_pair(_ left: u256, _ right: u256) -> u256 {
+    var buffer = MemBuffer::new(64)
+    buffer.write_word(offset: 0, value: left)
+    buffer.write_word(offset: 32, value: right)
+    sha256_word(buffer.span())
+}
+
+#[cfg(target = "evm")]
+pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
+    std::evm::ssz::hash_pair(left: left, right: right)
+}
+
+#[cfg(target = "native")]
+pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
+    software_hash_pair(left, right)
+}
+
+#[cfg(target = "evm")]
+pub fn bytes48_leaf(_ bytes: MemSpan) -> u256 {
+    if bytes.len() != 48 {
+        core::panic_code(PANIC_ASSERT)
+    }
+    std::evm::ssz::hash_tree_root<std::evm::ssz::ByteVector<48>>(bytes, start: 0, len: 48)
+}
+
+#[cfg(target = "native")]
+pub fn bytes48_leaf(_ bytes: MemSpan) -> u256 {
+    if bytes.len() != 48 {
+        core::panic_code(PANIC_ASSERT)
+    }
+    var buffer = MemBuffer::new(64)
+    buffer.copy_from(dest_offset: 0, bytes)
+    software_hash_pair(buffer.read_word(0), buffer.read_word(32))
+}
+
+pub struct Branch<const DEPTH: usize> where DEPTH >= 1, DEPTH <= MAX_BRANCH_DEPTH {
+    nodes: MemVec<u256>,
+}
+
+impl<const DEPTH: usize> Branch<DEPTH> {
+    pub fn new(_ nodes: [u256; DEPTH]) -> Self {
+        var words = MemVec::with_capacity(DEPTH)
+        var i: usize = 0
+        while i < DEPTH {
+            words.push(nodes[i])
+            i += 1
+        }
+        Branch { nodes: words }
+    }
+}
+
+impl<const DEPTH: usize> ProofNodes for Branch<DEPTH> {
+    fn nodes(self) -> ref MemSlice<u256> {
+        self.nodes.as_slice()
+    }
+}
+
+pub fn verify_branch<P: ProofNodes>(root: Root, leaf: u256, gindex: GIndex, branch: P) -> Result<
+    ProofError,
+    (),
+> {
+    let position = gindex.value()
+    if position == 0 {
+        return Result::Err(ProofError::DepthOutOfRange)
+    }
+    let nodes = branch.nodes()
+    if bit_length(position) - 1 != nodes.len() as u256 {
+        return Result::Err(ProofError::DepthOutOfRange)
+    }
+    var node = leaf
+    var level: usize = 0
+    while level < nodes.len() {
+        if (position >> (level as u256)) & 1 == 1 {
+            node = hash_pair(nodes[level], node)
+        } else {
+            node = hash_pair(node, nodes[level])
+        }
+        level += 1
+    }
+    if node != root.value() {
+        return Result::Err(ProofError::RootMismatch)
+    }
+    Result::Ok(())
+}

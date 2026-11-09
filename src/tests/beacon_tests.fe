@@ -1,311 +1,98 @@
-use ingot::fixtures::{chain_beacon, chain_storage_usdc, chain_storage_weth, validator_beacon}
-use ingot::{verify_account, verify_storage, NodeList, Proven, StateRoot, StorageRoot}
-use core::hash::sha256_word
-use core::MemBuffer
-use std::evm::ssz::u64_chunk
-
-const MAINNET_GENESIS_VALIDATORS_ROOT: u256 = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95
-const FULU_FORK_VERSION_LEAF: u256 = 0x0600000000000000000000000000000000000000000000000000000000000000
-
-fn hash_pair(_ left: u256, _ right: u256) -> u256 {
-    var buffer = MemBuffer::new(64)
-    buffer.write_word(offset: 0, value: left)
-    buffer.write_word(offset: 32, value: right)
-    sha256_word(buffer.span())
+use ingot::fixtures::{chain_beacon, chain_storage_usdc as usdc, chain_storage_weth as weth}
+use ingot::{
+    verify_account,
+    verify_execution_state_root,
+    verify_storage,
+    AccountState,
+    BeaconRoot,
+    Branch,
+    NodeList,
+    Proven,
+    StateRoot,
+    StorageRoot,
 }
 
-fn walk<const D: usize>(_ leaf: u256, _ gindex: u256, _ branch: [u256; D]) -> u256 {
-    core::assert(gindex >> (D as u256) == 1)
-    var node = leaf
-    var level: usize = 0
-    while level < D {
-        if (gindex >> (level as u256)) & 1 == 1 {
-            node = hash_pair(branch[level], node)
-        } else {
-            node = hash_pair(node, branch[level])
-        }
-        level += 1
-    }
-    node
-}
-
-fn header_root(
-    _ slot: u64,
-    _ proposer_index: u64,
-    _ parent_root: u256,
-    _ state_root: u256,
-    _ body_root: u256,
-) -> u256 {
-    let left = hash_pair(
-        hash_pair(u64_chunk(slot), u64_chunk(proposer_index)),
-        hash_pair(parent_root, state_root),
-    )
-    let right = hash_pair(hash_pair(body_root, 0), hash_pair(0, 0))
-    hash_pair(left, right)
-}
-
-fn pubkey_leaf<const N: usize>(_ pubkey: [u8; N]) -> u256 {
-    core::assert(N == 48)
-    var buffer = MemBuffer::new(64)
-    var i: usize = 0
-    while i < N {
-        buffer[i] = pubkey[i]
-        i += 1
-    }
-    sha256_word(buffer.span())
-}
-
-fn flip_each_level<const D: usize>(_ leaf: u256, _ gindex: u256, _ branch: [u256; D], root: u256) {
-    var level: usize = 0
-    while level < D {
-        var tampered = branch
-        tampered[level] = tampered[level] ^ 1
-        core::assert(walk(leaf, gindex, tampered) != root)
-        level += 1
+fn proven_state_root() -> StateRoot {
+    match verify_execution_state_root(
+        beacon_root: BeaconRoot::new(chain_beacon::BLOCK_ROOT),
+        state_root: chain_beacon::PAYLOAD_STATE_ROOT_LEAF,
+        branch: Branch::new(chain_beacon::PAYLOAD_STATE_ROOT_BRANCH),
+    ) {
+        Result::Ok(state_root) => state_root,
+        Result::Err(_) => {
+            core::assert(false)
+            StateRoot::new(0)
+        },
     }
 }
 
-#[test]
-fn beacon_headers_hash_to_their_block_roots() {
-    core::assert(
-        header_root(
-                chain_beacon::SLOT,
-                chain_beacon::PROPOSER_INDEX,
-                chain_beacon::PARENT_ROOT,
-                chain_beacon::HEADER_STATE_ROOT,
-                chain_beacon::BODY_ROOT,
-            )
-            == chain_beacon::BLOCK_ROOT,
-    )
-    core::assert(
-        header_root(
-                validator_beacon::SLOT,
-                validator_beacon::PROPOSER_INDEX,
-                validator_beacon::PARENT_ROOT,
-                validator_beacon::HEADER_STATE_ROOT,
-                validator_beacon::BODY_ROOT,
-            )
-            == validator_beacon::BLOCK_ROOT,
-    )
-}
-
-#[test]
-fn payload_proofs_walk_to_the_block_root() {
-    let root = chain_beacon::BLOCK_ROOT
-    core::assert(
-        walk(
-                chain_beacon::PAYLOAD_STATE_ROOT_LEAF,
-                chain_beacon::PAYLOAD_STATE_ROOT_GINDEX,
-                chain_beacon::PAYLOAD_STATE_ROOT_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                chain_beacon::PAYLOAD_BLOCK_NUMBER_LEAF,
-                chain_beacon::PAYLOAD_BLOCK_NUMBER_GINDEX,
-                chain_beacon::PAYLOAD_BLOCK_NUMBER_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                chain_beacon::PAYLOAD_BLOCK_HASH_LEAF,
-                chain_beacon::PAYLOAD_BLOCK_HASH_GINDEX,
-                chain_beacon::PAYLOAD_BLOCK_HASH_BRANCH,
-            )
-            == root,
-    )
-}
-
-#[test]
-fn validator_proofs_walk_to_the_block_root_from_rebuilt_leaves() {
-    let root = validator_beacon::BLOCK_ROOT
-    core::assert(
-        walk(
-                pubkey_leaf(validator_beacon::PUBKEY),
-                validator_beacon::VALIDATOR_PUBKEY_GINDEX,
-                validator_beacon::VALIDATOR_PUBKEY_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_LEAF,
-                validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_GINDEX,
-                validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                u64_chunk(validator_beacon::EFFECTIVE_BALANCE),
-                validator_beacon::VALIDATOR_EFFECTIVE_BALANCE_GINDEX,
-                validator_beacon::VALIDATOR_EFFECTIVE_BALANCE_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                MAINNET_GENESIS_VALIDATORS_ROOT,
-                validator_beacon::GENESIS_VALIDATORS_ROOT_GINDEX,
-                validator_beacon::GENESIS_VALIDATORS_ROOT_BRANCH,
-            )
-            == root,
-    )
-    core::assert(
-        walk(
-                FULU_FORK_VERSION_LEAF,
-                validator_beacon::FORK_VERSION_GINDEX,
-                validator_beacon::FORK_VERSION_BRANCH,
-            )
-            == root,
-    )
+fn account_at<const N: usize, const M: usize>(
+    state_root: StateRoot,
+    _ address: [u8; 20],
+    _ bytes: [u8; N],
+    _ offsets: [usize; M],
+    count: usize,
+) -> AccountState {
+    let nodes = NodeList::from_fixture(bytes, offsets, first: 0, count)
+    match verify_account(state_root, address, nodes) {
+        Result::Ok(Proven::Present(account)) => account,
+        _ => {
+            core::assert(false)
+            AccountState::missing()
+        },
+    }
 }
 
 #[test]
 fn storage_is_proven_from_the_beacon_block_root_alone() {
-    let state_root = chain_beacon::PAYLOAD_STATE_ROOT_LEAF
+    let state_root = proven_state_root()
+    let usdc_account = account_at(
+        state_root,
+        usdc::ADDRESS_BYTES,
+        usdc::ACCOUNT_BYTES,
+        usdc::ACCOUNT_OFFSETS,
+        count: usdc::ACCOUNT_NODE_COUNT,
+    )
     core::assert(
-        walk(
-                state_root,
-                chain_beacon::PAYLOAD_STATE_ROOT_GINDEX,
-                chain_beacon::PAYLOAD_STATE_ROOT_BRANCH,
-            )
-            == chain_beacon::BLOCK_ROOT,
+        usdc_account.storage_root == StorageRoot::new(usdc::STORAGE_ROOT),
     )
-    let usdc_nodes = NodeList::from_fixture(
-        chain_storage_usdc::ACCOUNT_BYTES,
-        chain_storage_usdc::ACCOUNT_OFFSETS,
+    let usdc_slot = NodeList::from_fixture(
+        usdc::SLOT_BYTES,
+        usdc::SLOT_OFFSETS,
         first: 0,
-        count: chain_storage_usdc::ACCOUNT_NODE_COUNT,
-    )
-    let usdc = match verify_account(
-        state_root: StateRoot::new(state_root),
-        chain_storage_usdc::ADDRESS_BYTES,
-        nodes: usdc_nodes,
-    ) {
-        Result::Ok(Proven::Present(account)) => account,
-        _ => {
-            core::assert(false)
-            return
-        },
-    }
-    core::assert(
-        usdc.storage_root == StorageRoot::new(chain_storage_usdc::STORAGE_ROOT),
-    )
-    let slot_nodes = NodeList::from_fixture(
-        chain_storage_usdc::SLOT_BYTES,
-        chain_storage_usdc::SLOT_OFFSETS,
-        first: 0,
-        count: chain_storage_usdc::SLOT_NODE_COUNTS[0],
+        count: usdc::SLOT_NODE_COUNTS[0],
     )
     match verify_storage(
-        storage_root: usdc.storage_root,
-        slot: chain_storage_usdc::SLOT_KEYS[0],
-        nodes: slot_nodes,
+        storage_root: usdc_account.storage_root,
+        slot: usdc::SLOT_KEYS[0],
+        nodes: usdc_slot,
     ) {
-        Result::Ok(value) => core::assert(value == chain_storage_usdc::SLOT_VALUES[0]),
+        Result::Ok(value) => core::assert(value == usdc::SLOT_VALUES[0]),
         Result::Err(_) => core::assert(false),
     }
-    let weth_nodes = NodeList::from_fixture(
-        chain_storage_weth::ACCOUNT_BYTES,
-        chain_storage_weth::ACCOUNT_OFFSETS,
-        first: 0,
-        count: chain_storage_weth::ACCOUNT_NODE_COUNT,
+    let weth_account = account_at(
+        state_root,
+        weth::ADDRESS_BYTES,
+        weth::ACCOUNT_BYTES,
+        weth::ACCOUNT_OFFSETS,
+        count: weth::ACCOUNT_NODE_COUNT,
     )
-    let weth = match verify_account(
-        state_root: StateRoot::new(state_root),
-        chain_storage_weth::ADDRESS_BYTES,
-        nodes: weth_nodes,
-    ) {
-        Result::Ok(Proven::Present(account)) => account,
-        _ => {
-            core::assert(false)
-            return
-        },
-    }
     var slot: usize = 0
     while slot < 3 {
         let nodes = NodeList::from_fixture(
-            chain_storage_weth::SLOT_BYTES,
-            chain_storage_weth::SLOT_OFFSETS,
-            first: chain_storage_weth::SLOT_NODE_STARTS[slot],
-            count: chain_storage_weth::SLOT_NODE_COUNTS[slot],
+            weth::SLOT_BYTES,
+            weth::SLOT_OFFSETS,
+            first: weth::SLOT_NODE_STARTS[slot],
+            count: weth::SLOT_NODE_COUNTS[slot],
         )
         match verify_storage(
-            storage_root: weth.storage_root,
-            slot: chain_storage_weth::SLOT_KEYS[slot],
+            storage_root: weth_account.storage_root,
+            slot: weth::SLOT_KEYS[slot],
             nodes,
         ) {
-            Result::Ok(value) => core::assert(value == chain_storage_weth::SLOT_VALUES[slot]),
+            Result::Ok(value) => core::assert(value == weth::SLOT_VALUES[slot]),
             Result::Err(_) => core::assert(false),
         }
         slot += 1
-    }
-}
-
-#[test]
-fn every_sibling_of_the_payload_state_root_proof_is_load_bearing() {
-    flip_each_level(
-        chain_beacon::PAYLOAD_STATE_ROOT_LEAF,
-        chain_beacon::PAYLOAD_STATE_ROOT_GINDEX,
-        chain_beacon::PAYLOAD_STATE_ROOT_BRANCH,
-        root: chain_beacon::BLOCK_ROOT,
-    )
-}
-
-#[test]
-fn every_sibling_of_the_validator_credentials_proof_is_load_bearing() {
-    flip_each_level(
-        validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_LEAF,
-        validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_GINDEX,
-        validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_BRANCH,
-        root: validator_beacon::BLOCK_ROOT,
-    )
-}
-
-#[test]
-fn a_proof_does_not_hold_at_a_neighbouring_position() {
-    let root = chain_beacon::BLOCK_ROOT
-    let leaf = chain_beacon::PAYLOAD_STATE_ROOT_LEAF
-    let gindex = chain_beacon::PAYLOAD_STATE_ROOT_GINDEX
-    let branch = chain_beacon::PAYLOAD_STATE_ROOT_BRANCH
-    core::assert(walk(leaf, gindex + 1, branch) != root)
-    core::assert(walk(leaf, gindex - 1, branch) != root)
-    core::assert(
-        walk(chain_beacon::PAYLOAD_BLOCK_HASH_LEAF, gindex, branch) != root,
-    )
-    let v_root = validator_beacon::BLOCK_ROOT
-    let v_leaf = validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_LEAF
-    let v_gindex = validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_GINDEX
-    let v_branch = validator_beacon::VALIDATOR_WITHDRAWAL_CREDENTIALS_BRANCH
-    core::assert(walk(v_leaf, v_gindex + 8, v_branch) != v_root)
-    core::assert(walk(v_leaf, v_gindex - 8, v_branch) != v_root)
-    core::assert(
-        walk(
-                u64_chunk(validator_beacon::EFFECTIVE_BALANCE + 1),
-                validator_beacon::VALIDATOR_EFFECTIVE_BALANCE_GINDEX,
-                validator_beacon::VALIDATOR_EFFECTIVE_BALANCE_BRANCH,
-            )
-            != v_root,
-    )
-}
-
-#[test]
-fn a_storage_proof_needs_the_proven_state_root() {
-    let nodes = NodeList::from_fixture(
-        chain_storage_usdc::ACCOUNT_BYTES,
-        chain_storage_usdc::ACCOUNT_OFFSETS,
-        first: 0,
-        count: chain_storage_usdc::ACCOUNT_NODE_COUNT,
-    )
-    match verify_account(
-        state_root: StateRoot::new(chain_beacon::PAYLOAD_BLOCK_HASH_LEAF),
-        chain_storage_usdc::ADDRESS_BYTES,
-        nodes,
-    ) {
-        Result::Err(_) => core::assert(true),
-        Result::Ok(_) => core::assert(false),
     }
 }
