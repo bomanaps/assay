@@ -1,0 +1,364 @@
+use ingot::fixtures::{chain_beacon as c, validator_beacon as v}
+use ingot::fixture_support::load
+use ingot::ssz::{concat, field}
+use ingot::beacon::validator_gindex
+use ingot::{
+    bytes48_leaf,
+    verify_branch,
+    verify_execution_state_root,
+    verify_payload_field,
+    verify_state_field,
+    verify_validator_field,
+    BeaconBlockHeader,
+    BeaconRoot,
+    Branch,
+    GIndex,
+    PayloadField,
+    ProofError,
+    Root,
+    StateField,
+    ValidatorField,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes32, DynArray}
+use std::evm::ssz::u64_chunk
+
+const MAINNET_GENESIS_VALIDATORS_ROOT: u256 = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95
+const FULU_FORK_VERSION_LEAF: u256 = 0x0600000000000000000000000000000000000000000000000000000000000000
+
+fn expect_error(_ result: Result<ProofError, ()>, _ expected: ProofError) {
+    match result {
+        Result::Err(error) => core::assert(error == expected),
+        Result::Ok(_) => core::assert(false),
+    }
+}
+
+fn expect_ok(_ result: Result<ProofError, ()>) {
+    match result {
+        Result::Ok(_) => core::assert(true),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+fn chain_root() -> BeaconRoot {
+    BeaconRoot::new(c::BLOCK_ROOT)
+}
+
+fn validator_root() -> BeaconRoot {
+    BeaconRoot::new(v::BLOCK_ROOT)
+}
+
+#[test]
+fn header_fields_hash_to_the_block_roots() {
+    let chain = BeaconBlockHeader {
+        slot: c::SLOT,
+        proposer_index: c::PROPOSER_INDEX,
+        parent_root: c::PARENT_ROOT,
+        state_root: c::HEADER_STATE_ROOT,
+        body_root: c::BODY_ROOT,
+    }
+    core::assert(chain.root() == chain_root())
+    let validator = BeaconBlockHeader {
+        slot: v::SLOT,
+        proposer_index: v::PROPOSER_INDEX,
+        parent_root: v::PARENT_ROOT,
+        state_root: v::HEADER_STATE_ROOT,
+        body_root: v::BODY_ROOT,
+    }
+    core::assert(validator.root() == validator_root())
+    let moved = BeaconBlockHeader {
+        slot: c::SLOT + 1,
+        proposer_index: c::PROPOSER_INDEX,
+        parent_root: c::PARENT_ROOT,
+        state_root: c::HEADER_STATE_ROOT,
+        body_root: c::BODY_ROOT,
+    }
+    core::assert(moved.root() != chain_root())
+}
+
+#[test]
+fn payload_fields_verify_at_their_positions() {
+    core::assert(
+        c::PAYLOAD_STATE_ROOT_GINDEX == PayloadField::StateRoot.gindex(),
+    )
+    core::assert(
+        c::PAYLOAD_BLOCK_NUMBER_GINDEX == PayloadField::BlockNumber.gindex(),
+    )
+    core::assert(
+        c::PAYLOAD_BLOCK_HASH_GINDEX == PayloadField::BlockHash.gindex(),
+    )
+    match verify_execution_state_root(
+        beacon_root: chain_root(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        branch: Branch::new(c::PAYLOAD_STATE_ROOT_BRANCH),
+    ) {
+        Result::Ok(state_root) => core::assert(state_root.value() == c::PAYLOAD_STATE_ROOT_LEAF),
+        Result::Err(_) => core::assert(false),
+    }
+    expect_ok(
+        verify_payload_field(
+            beacon_root: chain_root(),
+            which: PayloadField::BlockNumber,
+            leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+            branch: Branch::new(c::PAYLOAD_BLOCK_NUMBER_BRANCH),
+        ),
+    )
+    expect_ok(
+        verify_payload_field(
+            beacon_root: chain_root(),
+            which: PayloadField::BlockHash,
+            leaf: c::PAYLOAD_BLOCK_HASH_LEAF,
+            branch: Branch::new(c::PAYLOAD_BLOCK_HASH_BRANCH),
+        ),
+    )
+}
+
+#[test]
+fn validator_fields_verify_from_rebuilt_leaves() {
+    let index = v::VALIDATOR_INDEX
+    expect_ok(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index,
+            which: ValidatorField::Pubkey,
+            leaf: bytes48_leaf(load(v::PUBKEY).span()),
+            branch: Branch::new(v::VALIDATOR_PUBKEY_BRANCH),
+        ),
+    )
+    expect_ok(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index,
+            which: ValidatorField::WithdrawalCredentials,
+            leaf: v::VALIDATOR_WITHDRAWAL_CREDENTIALS_LEAF,
+            branch: Branch::new(v::VALIDATOR_WITHDRAWAL_CREDENTIALS_BRANCH),
+        ),
+    )
+    expect_ok(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index,
+            which: ValidatorField::EffectiveBalance,
+            leaf: u64_chunk(v::EFFECTIVE_BALANCE),
+            branch: Branch::new(v::VALIDATOR_EFFECTIVE_BALANCE_BRANCH),
+        ),
+    )
+}
+
+#[test]
+fn state_fields_prove_mainnet_and_fulu() {
+    expect_ok(
+        verify_state_field(
+            beacon_root: validator_root(),
+            which: StateField::GenesisValidatorsRoot,
+            leaf: MAINNET_GENESIS_VALIDATORS_ROOT,
+            branch: Branch::new(v::GENESIS_VALIDATORS_ROOT_BRANCH),
+        ),
+    )
+    expect_ok(
+        verify_state_field(
+            beacon_root: validator_root(),
+            which: StateField::ForkCurrentVersion,
+            leaf: FULU_FORK_VERSION_LEAF,
+            branch: Branch::new(v::FORK_VERSION_BRANCH),
+        ),
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn abi_bytes32_arrays_verify_like_memory_branches() {
+    var words: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < 12 {
+        words.push(Bytes32 { val: c::PAYLOAD_STATE_ROOT_BRANCH[i] })
+        i += 1
+    }
+    let branch: DynArray<Bytes32> = DynArray::from_mem_vec(words)
+    match verify_execution_state_root(
+        beacon_root: chain_root(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        branch,
+    ) {
+        Result::Ok(_) => core::assert(true),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn a_branch_of_the_wrong_length_is_rejected() {
+    var short: [u256; 11] = [0; 11]
+    var i: usize = 0
+    while i < 11 {
+        short[i] = c::PAYLOAD_STATE_ROOT_BRANCH[i]
+        i += 1
+    }
+    expect_error(
+        verify_payload_field(
+            beacon_root: chain_root(),
+            which: PayloadField::StateRoot,
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            branch: Branch::new(short),
+        ),
+        ProofError::DepthOutOfRange,
+    )
+    expect_error(
+        verify_branch(
+            root: Root::new(c::BLOCK_ROOT),
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            gindex: GIndex::new(0),
+            branch: Branch::new(c::PAYLOAD_STATE_ROOT_BRANCH),
+        ),
+        ProofError::DepthOutOfRange,
+    )
+}
+
+#[test]
+fn a_proof_does_not_hold_for_another_field_index_or_leaf() {
+    expect_error(
+        verify_payload_field(
+            beacon_root: chain_root(),
+            which: PayloadField::BlockHash,
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            branch: Branch::new(c::PAYLOAD_STATE_ROOT_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_branch(
+            root: Root::new(c::BLOCK_ROOT),
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            gindex: GIndex::new(c::PAYLOAD_STATE_ROOT_GINDEX + 1),
+            branch: Branch::new(c::PAYLOAD_STATE_ROOT_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index: v::VALIDATOR_INDEX + 1,
+            which: ValidatorField::WithdrawalCredentials,
+            leaf: v::VALIDATOR_WITHDRAWAL_CREDENTIALS_LEAF,
+            branch: Branch::new(v::VALIDATOR_WITHDRAWAL_CREDENTIALS_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index: v::VALIDATOR_INDEX,
+            which: ValidatorField::EffectiveBalance,
+            leaf: u64_chunk(v::EFFECTIVE_BALANCE + 1),
+            branch: Branch::new(v::VALIDATOR_EFFECTIVE_BALANCE_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_payload_field(
+            beacon_root: validator_root(),
+            which: PayloadField::StateRoot,
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            branch: Branch::new(c::PAYLOAD_STATE_ROOT_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+}
+
+#[test(should_revert)]
+fn a_field_index_outside_the_container_reverts() {
+    let _ = field(3, 3)
+}
+
+#[test(should_revert)]
+fn a_zero_position_cannot_be_concatenated() {
+    let _ = concat(0, 5)
+}
+
+fn pubkey_chunks() -> (u256, u256) {
+    var buffer = MemBuffer::new(64)
+    buffer.copy_from(dest_offset: 0, load(v::PUBKEY).span())
+    (buffer.read_word(0), buffer.read_word(32))
+}
+
+#[test]
+fn a_validator_index_beyond_the_registry_is_rejected_even_with_a_working_branch() {
+    let (first, second) = pubkey_chunks()
+    var forged: [u256; 54] = [0; 54]
+    forged[0] = first
+    var i: usize = 0
+    while i < 53 {
+        forged[i + 1] = v::VALIDATOR_PUBKEY_BRANCH[i]
+        i += 1
+    }
+    let index: u64 = (1 << 40) + 2 * v::VALIDATOR_INDEX
+    expect_ok(
+        verify_branch(
+            root: Root::new(v::BLOCK_ROOT),
+            leaf: second,
+            gindex: GIndex::new(2 * v::VALIDATOR_PUBKEY_GINDEX + 1),
+            branch: Branch::new(forged),
+        ),
+    )
+    expect_error(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index,
+            which: ValidatorField::WithdrawalCredentials,
+            leaf: second,
+            branch: Branch::new(forged),
+        ),
+        ProofError::IndexOutOfRange,
+    )
+}
+
+#[test(should_revert)]
+fn a_position_for_an_index_beyond_the_registry_is_refused() {
+    let _ = validator_gindex(1 << 40, ValidatorField::Pubkey)
+}
+
+#[test]
+fn a_branch_longer_than_its_position_is_rejected() {
+    var long: [u256; 13] = [0; 13]
+    var i: usize = 0
+    while i < 12 {
+        long[i] = c::PAYLOAD_STATE_ROOT_BRANCH[i]
+        i += 1
+    }
+    expect_error(
+        verify_payload_field(
+            beacon_root: chain_root(),
+            which: PayloadField::StateRoot,
+            leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+            branch: Branch::new(long),
+        ),
+        ProofError::DepthOutOfRange,
+    )
+}
+
+#[test]
+fn position_one_is_the_root_itself() {
+    let empty: MemVec<u256> = MemVec::new()
+    expect_ok(
+        verify_branch(
+            root: Root::new(c::BLOCK_ROOT),
+            leaf: c::BLOCK_ROOT,
+            gindex: GIndex::new(1),
+            branch: empty.as_slice(),
+        ),
+    )
+    expect_error(
+        verify_branch(
+            root: Root::new(c::BLOCK_ROOT),
+            leaf: c::BODY_ROOT,
+            gindex: GIndex::new(1),
+            branch: empty.as_slice(),
+        ),
+        ProofError::RootMismatch,
+    )
+}
+
+#[test(should_revert)]
+fn a_pubkey_longer_than_forty_eight_bytes_is_refused() {
+    let long = MemBuffer::new(49)
+    let _ = bytes48_leaf(long.span())
+}

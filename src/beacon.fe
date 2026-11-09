@@ -1,0 +1,174 @@
+use std::evm::merkle::ProofNodes
+use std::evm::ssz::u64_chunk
+use ingot::ssz::{concat, field, hash_pair, verify_branch}
+use core::panics::PANIC_ASSERT
+use ingot::{BeaconRoot, GIndex, ProofError, StateRoot}
+
+pub const HEADER_FIELDS: u256 = 5
+pub const BODY_FIELDS: u256 = 13
+pub const PAYLOAD_FIELDS: u256 = 17
+pub const STATE_FIELDS: u256 = 38
+pub const FORK_FIELDS: u256 = 3
+pub const VALIDATOR_FIELDS: u256 = 8
+pub const VALIDATOR_REGISTRY_DEPTH: u256 = 40
+pub const VALIDATOR_REGISTRY_LIMIT: u256 = 1 << VALIDATOR_REGISTRY_DEPTH
+
+pub const HEADER_STATE_ROOT: u256 = field(HEADER_FIELDS, 3)
+pub const HEADER_BODY_ROOT: u256 = field(HEADER_FIELDS, 4)
+pub const EXECUTION_PAYLOAD: u256 = concat(HEADER_BODY_ROOT, field(BODY_FIELDS, 9))
+pub const PAYLOAD_STATE_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 2))
+pub const PAYLOAD_BLOCK_NUMBER: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 6))
+pub const PAYLOAD_BLOCK_HASH: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 12))
+pub const STATE_GENESIS_VALIDATORS_ROOT: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 1))
+pub const STATE_FORK_CURRENT_VERSION: u256 = concat(
+    HEADER_STATE_ROOT,
+    concat(field(STATE_FIELDS, 3), field(FORK_FIELDS, 1)),
+)
+pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_FIELDS, 11), 2))
+
+static_assert(HEADER_STATE_ROOT == 11)
+static_assert(HEADER_BODY_ROOT == 12)
+static_assert(PAYLOAD_STATE_ROOT == 6434)
+static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
+static_assert(PAYLOAD_BLOCK_HASH == 6444)
+static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
+static_assert(STATE_FORK_CURRENT_VERSION == 2829)
+
+pub enum PayloadField {
+    StateRoot,
+    BlockNumber,
+    BlockHash,
+}
+
+impl PayloadField {
+    pub const fn gindex(self) -> u256 {
+        match self {
+            Self::StateRoot => PAYLOAD_STATE_ROOT,
+            Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
+            Self::BlockHash => PAYLOAD_BLOCK_HASH,
+        }
+    }
+}
+
+pub enum StateField {
+    GenesisValidatorsRoot,
+    ForkCurrentVersion,
+}
+
+impl StateField {
+    pub const fn gindex(self) -> u256 {
+        match self {
+            Self::GenesisValidatorsRoot => STATE_GENESIS_VALIDATORS_ROOT,
+            Self::ForkCurrentVersion => STATE_FORK_CURRENT_VERSION,
+        }
+    }
+}
+
+pub enum ValidatorField {
+    Pubkey,
+    WithdrawalCredentials,
+    EffectiveBalance,
+}
+
+impl ValidatorField {
+    pub const fn index(self) -> u256 {
+        match self {
+            Self::Pubkey => 0,
+            Self::WithdrawalCredentials => 1,
+            Self::EffectiveBalance => 2,
+        }
+    }
+}
+
+pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> u256 {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        core::panic_code(PANIC_ASSERT)
+    }
+    let element = concat(VALIDATORS_DATA, VALIDATOR_REGISTRY_LIMIT + index as u256)
+    concat(element, field(VALIDATOR_FIELDS, which.index()))
+}
+
+static_assert(validator_gindex(0, ValidatorField::Pubkey) == 12578413021757440)
+static_assert(validator_gindex(0, ValidatorField::WithdrawalCredentials) == 12578413021757441)
+static_assert(validator_gindex(2345678, ValidatorField::EffectiveBalance) == 12578413040522866)
+
+pub struct BeaconBlockHeader {
+    pub slot: u64,
+    pub proposer_index: u64,
+    pub parent_root: u256,
+    pub state_root: u256,
+    pub body_root: u256,
+}
+
+impl Copy for BeaconBlockHeader {}
+
+impl BeaconBlockHeader {
+    pub fn root(self) -> BeaconRoot {
+        let left = hash_pair(
+            hash_pair(u64_chunk(self.slot), u64_chunk(self.proposer_index)),
+            hash_pair(self.parent_root, self.state_root),
+        )
+        let right = hash_pair(hash_pair(self.body_root, 0), hash_pair(0, 0))
+        BeaconRoot::new(hash_pair(left, right))
+    }
+}
+
+pub fn verify_payload_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    which: PayloadField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: GIndex::new(which.gindex()),
+        branch,
+    )
+}
+
+pub fn verify_execution_state_root<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    state_root: u256,
+    branch: P,
+) -> Result<ProofError, StateRoot> {
+    verify_payload_field(
+        beacon_root,
+        which: PayloadField::StateRoot,
+        leaf: state_root,
+        branch,
+    )?
+    Result::Ok(StateRoot::new(state_root))
+}
+
+pub fn verify_state_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    which: StateField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: GIndex::new(which.gindex()),
+        branch,
+    )
+}
+
+pub fn verify_validator_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    index: u64,
+    which: ValidatorField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: GIndex::new(validator_gindex(index, which)),
+        branch,
+    )
+}
