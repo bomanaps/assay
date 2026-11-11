@@ -12,14 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FE_COMMIT: b182b0126bbe535433c2698e0fdc96e3899931c7
-  SONATINA_BASE: 279793642564e781846bdea1561825f64aee300a
-  SONATINA_COMMIT: 63acfe542a255ad1f57f9995348b7b2c99680729
+  FE_VERSION: v26.6.0
+  FE_VERSION_LINE: fe 26.6.0 (5b3f96a)
+  FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
 
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Fixture integrity
@@ -37,48 +37,24 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/spec"
           "$RUNNER_TEMP/spec/bin/pip" install pycryptodome==3.23.0 -r tools/requirements-spec.txt
           "$RUNNER_TEMP/spec/bin/python3" -I tools/spec_crosscheck.py
-      - name: Check out Fe at the pinned commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: argotorg/fe
-          ref: ${{ env.FE_COMMIT }}
-          path: fe
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-        with:
-          toolchain: stable
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 20
-      - name: Point Fe at the Sonatina commit that carries the GVN fix from fe-lang/sonatina#488
-        working-directory: fe
+      - name: Install Fe from the release, checked against its SHA-256
         run: |
-          test "$(grep -c "$SONATINA_BASE" Cargo.toml)" -ge 1
-          sed -i "s/$SONATINA_BASE/$SONATINA_COMMIT/g" Cargo.toml
-          test "$(grep -c "$SONATINA_BASE" Cargo.toml)" -eq 0
-      - name: Generate tree-sitter parser
-        working-directory: fe/crates/tree-sitter-fe
-        run: |
-          npm ci --ignore-scripts
-          npm rebuild tree-sitter-cli
-          npx tree-sitter generate --abi=14
-      - name: Cache Fe build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          workspaces: fe
-          cache-on-failure: true
-      - name: Build Fe
-        run: cargo build --release -p fe --features cranelift --manifest-path fe/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/fe-bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe-bin/fe" "https://github.com/argotorg/fe/releases/download/$FE_VERSION/fe_linux_amd64"
+          echo "$FE_SHA256  $RUNNER_TEMP/fe-bin/fe" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/fe-bin/fe"
+          echo "$RUNNER_TEMP/fe-bin" >> "$GITHUB_PATH"
       - name: Fe version
-        run: fe/target/release/fe --version
+        run: |
+          fe --version
+          test "$(fe --version)" = "$FE_VERSION_LINE"
       - name: Format check
-        run: fe/target/release/fe fmt --check
+        run: fe fmt --check
       - name: Type check
-        run: fe/target/release/fe check
+        run: fe check
       - name: Tests on the EVM backend
-        run: fe/target/release/fe test
+        run: fe test
       - name: Tests on the EVM backend at -O 2
-        run: fe/target/release/fe test -O 2
+        run: fe test -O 2
       - name: Tests on the native backend
-        run: fe/target/release/fe test --backend native
+        run: fe test --backend native
