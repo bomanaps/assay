@@ -254,6 +254,7 @@ pub enum ProofError {
     RootMismatch,
     KeyNotConsumed,
     IndexOutOfRange,
+    WrongLength,
 }
 
 impl Copy for ProofError {}
@@ -271,6 +272,7 @@ impl Eq for ProofError {
             (Self::RootMismatch, Self::RootMismatch) => true,
             (Self::KeyNotConsumed, Self::KeyNotConsumed) => true,
             (Self::IndexOutOfRange, Self::IndexOutOfRange) => true,
+            (Self::WrongLength, Self::WrongLength) => true,
             _ => false,
         }
     }

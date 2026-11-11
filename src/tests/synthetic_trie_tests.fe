@@ -1,0 +1,61 @@
+use ingot::fixture_support::load_packed
+use ingot::fixtures::synthetic_tries as s
+use ingot::{verify_trie, NodeList, ProofNodes, Proven, Root, TrieKey}
+use core::{MemBuffer, MemSpan}
+
+fn proof_of(_ nodes: MemSpan, case: usize) -> NodeList {
+    var list = NodeList::new()
+    var i = s::PROOF_STARTS[case]
+    while i < s::PROOF_STARTS[case + 1] {
+        let node = s::PROOF_NODES[i]
+        let start = s::NODE_OFFSETS[node]
+        list.push(
+            nodes.slice(offset: start, len: s::NODE_OFFSETS[node + 1] - start),
+        )
+        i += 1
+    }
+    list
+}
+
+fn same_bytes(_ actual: MemSpan, _ values: MemSpan, case: usize) -> bool {
+    let start = s::VALUE_OFFSETS[case]
+    let len = s::VALUE_OFFSETS[case + 1] - start
+    if actual.len() != len {
+        return false
+    }
+    var i: usize = 0
+    while i < len {
+        if actual.byte_at(i) != values.byte_at(start + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn outcome(_ nodes: MemSpan, _ values: MemSpan, case: usize) -> bool {
+    let proof = proof_of(nodes, case)
+    match verify_trie(
+        root: Root::new(s::ROOTS[s::CASE_TRIE[case]]),
+        key: TrieKey::new(s::CASE_KEYS[case]),
+        nodes: proof,
+    ) {
+        Result::Ok(Proven::Present(leaf)) => {
+            s::CASE_PRESENT[case]
+                && same_bytes(leaf.item.payload(proof.node(leaf.node)), values, case)
+        },
+        Result::Ok(Proven::Absent) => !s::CASE_PRESENT[case],
+        Result::Err(_) => false,
+    }
+}
+
+#[test]
+fn every_random_trie_case_verifies_to_its_claimed_value_or_absence() {
+    let nodes: MemBuffer = load_packed(s::NODE_BYTES_WORDS, len: s::NODE_BYTES_LEN)
+    let values: MemBuffer = load_packed(s::VALUE_BYTES_WORDS, len: s::VALUE_BYTES_LEN)
+    var case: usize = 0
+    while case < s::CASE_COUNT {
+        core::assert(outcome(nodes.span(), values.span(), case))
+        case += 1
+    }
+}

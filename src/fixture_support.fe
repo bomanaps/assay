@@ -1,11 +1,23 @@
 use core::MemBuffer
 
-pub fn load<const N: usize>(_ bytes: [u8; N]) -> MemBuffer {
+pub(ingot) fn load<const N: usize>(_ bytes: [u8; N]) -> MemBuffer {
     var buffer = MemBuffer::with_capacity(N)
     var i: usize = 0
     while i < N {
         buffer.push(bytes[i])
         i += 1
     }
+    buffer
+}
+
+pub(ingot) fn load_packed<const N: usize>(_ words: [u256; N], len: usize) -> MemBuffer {
+    core::assert(len <= 32 * N && 32 * N < len + 32)
+    var buffer = MemBuffer::new(32 * N)
+    var i: usize = 0
+    while i < N {
+        buffer.write_word(offset: 32 * i, value: words[i])
+        i += 1
+    }
+    buffer.truncate(len)
     buffer
 }

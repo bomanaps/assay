@@ -1,5 +1,5 @@
-pub const STATE_ROOT: u256 = 0xd997f307cf812f893d2d10d5eff7fc0be554a29d6768fdaed1ed901b00c7009d
-pub const ADDRESS_BYTES: [u8; 20] = [
+pub(ingot) const STATE_ROOT: u256 = 0xd997f307cf812f893d2d10d5eff7fc0be554a29d6768fdaed1ed901b00c7009d
+pub(ingot) const ADDRESS_BYTES: [u8; 20] = [
     0xd8,
     0xda,
     0x6b,
@@ -21,14 +21,25 @@ pub const ADDRESS_BYTES: [u8; 20] = [
     0x60,
     0x45,
 ]
-pub const ACCOUNT_PRESENT: bool = true
-pub const NONCE: u64 = 5970
-pub const BALANCE: u256 = 5780441042197210512
-pub const STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
-pub const CODE_HASH: u256 = 0xd8ef78646344da0ceb69cbcdb306939b3ba0514174fa28b6c6fa189953ff226d
-pub const ACCOUNT_NODE_COUNT: usize = 9
-pub const ACCOUNT_OFFSETS: [usize; 10] = [0, 532, 1064, 1596, 2128, 2660, 3192, 3564, 3647, 3761]
-pub const ACCOUNT_BYTES: [u8; 3761] = [
+pub(ingot) const ACCOUNT_PRESENT: bool = true
+pub(ingot) const NONCE: u64 = 5970
+pub(ingot) const BALANCE: u256 = 5780441042197210512
+pub(ingot) const STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
+pub(ingot) const CODE_HASH: u256 = 0xd8ef78646344da0ceb69cbcdb306939b3ba0514174fa28b6c6fa189953ff226d
+pub(ingot) const ACCOUNT_NODE_COUNT: usize = 9
+pub(ingot) const ACCOUNT_OFFSETS: [usize; 10] = [
+    0,
+    532,
+    1064,
+    1596,
+    2128,
+    2660,
+    3192,
+    3564,
+    3647,
+    3761,
+]
+pub(ingot) const ACCOUNT_BYTES: [u8; 3761] = [
     0xf9,
     0x02,
     0x11,
@@ -3791,10 +3802,9 @@ pub const ACCOUNT_BYTES: [u8; 3761] = [
     0x22,
     0x6d,
 ]
-pub const SLOT_KEYS: [u256; 0] = []
-pub const SLOT_PRESENT: [bool; 0] = []
-pub const SLOT_VALUES: [u256; 0] = []
-pub const SLOT_NODE_STARTS: [usize; 1] = [0]
-pub const SLOT_NODE_COUNTS: [usize; 0] = []
-pub const SLOT_OFFSETS: [usize; 1] = [0]
-pub const SLOT_BYTES: [u8; 0] = []
+pub(ingot) const SLOT_KEYS: [u256; 0] = []
+pub(ingot) const SLOT_PRESENT: [bool; 0] = []
+pub(ingot) const SLOT_VALUES: [u256; 0] = []
+pub(ingot) const SLOT_NODE_STARTS: [usize; 1] = [0]
+pub(ingot) const SLOT_OFFSETS: [usize; 1] = [0]
+pub(ingot) const SLOT_BYTES: [u8; 0] = []

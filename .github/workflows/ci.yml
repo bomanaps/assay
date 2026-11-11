@@ -30,7 +30,13 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python3" -I -m unittest discover -s tools -p "test_*.py"
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_mpt.py fixtures/*.json
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_ssz.py fixtures/*.json
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/synth_trie.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
+      - name: Trie roots against the Ethereum execution specification
+        run: |
+          python3 -m venv "$RUNNER_TEMP/spec"
+          "$RUNNER_TEMP/spec/bin/pip" install pycryptodome==3.23.0 -r tools/requirements-spec.txt
+          "$RUNNER_TEMP/spec/bin/python3" -I tools/spec_crosscheck.py
       - name: Check out Fe at the pinned commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:

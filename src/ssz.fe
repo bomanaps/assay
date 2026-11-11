@@ -58,21 +58,25 @@ pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
 }
 
 #[cfg(target = "evm")]
-pub fn bytes48_leaf(_ bytes: MemSpan) -> u256 {
+pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
     if bytes.len() != 48 {
-        core::panic_code(PANIC_ASSERT)
+        return Result::Err(ProofError::WrongLength)
     }
-    std::evm::ssz::hash_tree_root<std::evm::ssz::ByteVector<48>>(bytes, start: 0, len: 48)
+    Result::Ok(
+        std::evm::ssz::hash_tree_root<std::evm::ssz::ByteVector<48>>(bytes, start: 0, len: 48),
+    )
 }
 
 #[cfg(target = "native")]
-pub fn bytes48_leaf(_ bytes: MemSpan) -> u256 {
+pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
     if bytes.len() != 48 {
-        core::panic_code(PANIC_ASSERT)
+        return Result::Err(ProofError::WrongLength)
     }
     var buffer = MemBuffer::new(64)
     buffer.copy_from(dest_offset: 0, bytes)
-    software_hash_pair(buffer.read_word(0), buffer.read_word(32))
+    Result::Ok(
+        software_hash_pair(buffer.read_word(0), buffer.read_word(32)),
+    )
 }
 
 pub struct Branch<const DEPTH: usize> where DEPTH >= 1, DEPTH <= MAX_BRANCH_DEPTH {

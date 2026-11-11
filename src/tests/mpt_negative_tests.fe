@@ -58,7 +58,8 @@ fn usdc_slot0() -> NodeList {
         mainnet_storage_usdc::SLOT_BYTES,
         mainnet_storage_usdc::SLOT_OFFSETS,
         first: 0,
-        count: mainnet_storage_usdc::SLOT_NODE_COUNTS[0],
+        count: mainnet_storage_usdc::SLOT_NODE_STARTS[1] -
+            mainnet_storage_usdc::SLOT_NODE_STARTS[0],
     )
 }
 
@@ -67,7 +68,8 @@ fn absent_slot() -> NodeList {
         mainnet_storage_absent::SLOT_BYTES,
         mainnet_storage_absent::SLOT_OFFSETS,
         first: 0,
-        count: mainnet_storage_absent::SLOT_NODE_COUNTS[0],
+        count: mainnet_storage_absent::SLOT_NODE_STARTS[1] -
+            mainnet_storage_absent::SLOT_NODE_STARTS[0],
     )
 }
 
@@ -406,6 +408,29 @@ fn nonce_must_fit_in_sixty_four_bits() {
     var over = MemBuffer::new(9)
     over[0] = 0x01
     match decode_account(account_with_nonce(over).span()) {
+        Result::Err(ProofError::BadRlp) => core::assert(true),
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn an_account_leaf_with_a_fifth_field_is_rejected() {
+    var nonce = MemBuffer::new(2)
+    nonce[0] = 0x01
+    let four = account_with_nonce(nonce)
+    match decode_account(four.span()) {
+        Result::Ok(account) => core::assert(account.nonce == 0x0100),
+        Result::Err(_) => core::assert(false),
+    }
+    var five = MemBuffer::new(four.len() + 1)
+    var i: usize = 0
+    while i < four.len() {
+        five[i] = four[i]
+        i += 1
+    }
+    five[1] = four[1] + 1
+    five[four.len()] = 0x80
+    match decode_account(five.span()) {
         Result::Err(ProofError::BadRlp) => core::assert(true),
         _ => core::assert(false),
     }
