@@ -1,0 +1,271 @@
+use core::message::MsgVariant
+use core::MemBuffer
+use std::abi::{Bytes, Bytes32, DynArray, Sol, SolCompat, sol}
+use std::evm::{Address, Call, Ctx, revert_error}
+use ingot::{
+    bytes48_leaf,
+    verify_account,
+    verify_execution_state_root,
+    verify_storage,
+    verify_validator,
+    AccountState,
+    BeaconBlockHeader,
+    BeaconRoot,
+    ProofError,
+    Proven,
+    Validator,
+}
+
+pub const FULU_FORK_EPOCH: u64 = 411392
+pub const SLOTS_PER_EPOCH: u64 = 32
+pub const FULU_FIRST_SLOT: u64 = FULU_FORK_EPOCH * SLOTS_PER_EPOCH
+pub const ADDRESS_BYTES: usize = 20
+
+static_assert(FULU_FIRST_SLOT == 13164544)
+
+#[abi]
+pub struct Header {
+    pub slot: u64,
+    pub proposer_index: u64,
+    pub parent_root: Bytes32,
+    pub state_root: Bytes32,
+    pub body_root: Bytes32,
+}
+
+impl Copy for Header {}
+
+#[abi]
+pub struct ValidatorRecord {
+    pub pubkey: Bytes,
+    pub withdrawal_credentials: Bytes32,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: u64,
+    pub activation_epoch: u64,
+    pub exit_epoch: u64,
+    pub withdrawable_epoch: u64,
+}
+
+#[error]
+pub struct RootUnavailable { pub timestamp: u64 }
+
+#[error]
+pub struct HeaderMismatch { pub root: Bytes32 }
+
+#[error]
+pub struct UnsupportedSlot { pub slot: u64 }
+
+#[error]
+pub struct BeaconRootsWithoutCode { pub roots: Address }
+
+#[error]
+pub struct InvalidProof { pub code: u8 }
+
+pub msg ProverMsg {
+    #[selector = sol(
+        "proveStorage(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32[],address,bytes[],uint256,bytes[])",
+    )]
+    ProveStorage {
+        timestamp: u64,
+        header: Header,
+        state_root: Bytes32,
+        state_root_branch: DynArray<Bytes32>,
+        account: Address,
+        account_nodes: DynArray<Bytes>,
+        slot: u256,
+        storage_nodes: DynArray<Bytes>,
+    } -> (u256, u64),
+    #[selector = sol(
+        "proveValidator(uint64,(uint64,uint64,bytes32,bytes32,bytes32),uint64,(bytes,bytes32,uint64,bool,uint64,uint64,uint64,uint64),bytes32[])",
+    )]
+    ProveValidator {
+        timestamp: u64,
+        header: Header,
+        index: u64,
+        validator: ValidatorRecord,
+        branch: DynArray<Bytes32>,
+    } -> u64,
+}
+
+static_assert(<ProverMsg::ProveStorage as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "proveStorage",
+            <(
+                u64,
+                Header,
+                Bytes32,
+                DynArray<Bytes32>,
+                Address,
+                DynArray<Bytes>,
+                u256,
+                DynArray<Bytes>,
+            ) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+static_assert(<ProverMsg::ProveValidator as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "proveValidator",
+            <(u64, Header, u64, ValidatorRecord, DynArray<Bytes32>) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+
+pub fn proof_error_code(_ error: ProofError) -> u8 {
+    match error {
+        ProofError::BadRlp => 1,
+        ProofError::HashMismatch(_) => 2,
+        ProofError::PathExhausted => 3,
+        ProofError::TrailingNodes => 4,
+        ProofError::BadHexPrefix => 5,
+        ProofError::BranchValueOnPath => 6,
+        ProofError::DepthOutOfRange => 7,
+        ProofError::RootMismatch => 8,
+        ProofError::KeyNotConsumed => 9,
+        ProofError::IndexOutOfRange => 10,
+        ProofError::WrongLength => 11,
+    }
+}
+
+fn checked<T>(_ result: own Result<ProofError, T>) -> T {
+    match result {
+        Result::Ok(value) => value,
+        Result::Err(error) => revert_error(InvalidProof { code: proof_error_code(error) }),
+    }
+}
+
+fn address_bytes(_ address: Address) -> [u8; ADDRESS_BYTES] {
+    let word = address.word()
+    var bytes: [u8; ADDRESS_BYTES] = [0; ADDRESS_BYTES]
+    var i: usize = 0
+    while i < ADDRESS_BYTES {
+        bytes[i] = ((word >> (8 * (ADDRESS_BYTES - 1 - i)) as u256) & 0xff).downcast_truncate()
+        i += 1
+    }
+    bytes
+}
+
+fn beacon_root(_ beacon_roots: Address, timestamp: u64) -> BeaconRoot
+uses (call: Call, ctx: Ctx)
+{
+    var args = MemBuffer::new(32)
+    args.write_word(offset: 0, value: timestamp as u256)
+    var reply = MemBuffer::with_capacity(32)
+    let outcome = call
+        .raw_staticcall(
+            addr: beacon_roots,
+            gas: ctx.gas(),
+            args: args.span(),
+            ret: mut reply,
+        )
+    if !outcome.success() || outcome.returndata_len() != 32 {
+        revert_error(RootUnavailable { timestamp })
+    }
+    BeaconRoot::new(reply.read_word(0))
+}
+
+fn proven_root(
+    _ beacon_roots: Address,
+    last_slot: u64,
+    timestamp: u64,
+    _ header: Header,
+) -> BeaconRoot
+uses (call: Call, ctx: Ctx)
+{
+    let root = beacon_root(beacon_roots, timestamp)
+    let computed = BeaconBlockHeader {
+        slot: header.slot,
+        proposer_index: header.proposer_index,
+        parent_root: header.parent_root.val,
+        state_root: header.state_root.val,
+        body_root: header.body_root.val,
+    }
+        .root()
+    if computed != root {
+        revert_error(HeaderMismatch { root: Bytes32 { val: root.value() } })
+    }
+    if header.slot < FULU_FIRST_SLOT || header.slot >= last_slot {
+        revert_error(UnsupportedSlot { slot: header.slot })
+    }
+    root
+}
+
+pub contract BeaconProver uses (call: Call, ctx: Ctx) {
+    beacon_roots: Address,
+    last_slot: u64,
+
+    init(roots: Address, end_slot: u64)
+    uses (ctx, mut beacon_roots, mut last_slot)
+    {
+        if end_slot <= FULU_FIRST_SLOT {
+            revert_error(UnsupportedSlot { slot: end_slot })
+        }
+        if ctx.extcodesize(roots) == 0 {
+            revert_error(BeaconRootsWithoutCode { roots })
+        }
+        beacon_roots = roots
+        last_slot = end_slot
+    }
+
+    recv ProverMsg {
+        ProveStorage {
+            timestamp,
+            header,
+            state_root,
+            state_root_branch,
+            account,
+            account_nodes,
+            slot,
+            storage_nodes,
+        } -> (u256, u64)
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            let execution_root = checked(
+                verify_execution_state_root(
+                    beacon_root: root,
+                    state_root: state_root.val,
+                    branch: state_root_branch,
+                ),
+            )
+            let account_state = match checked(
+                verify_account(
+                    state_root: execution_root,
+                    address_bytes(account),
+                    nodes: account_nodes.to_mem_array(),
+                ),
+            ) {
+                Proven::Present(found) => found,
+                Proven::Absent => AccountState::missing(),
+            }
+            let value = checked(
+                verify_storage(
+                    storage_root: account_state.storage_root,
+                    slot,
+                    nodes: storage_nodes.to_mem_array(),
+                ),
+            )
+            (value, header.slot)
+        }
+
+        ProveValidator { timestamp, header, index, validator, branch } -> u64
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            let record = Validator {
+                pubkey_root: checked(bytes48_leaf(validator.pubkey.span())),
+                withdrawal_credentials: validator.withdrawal_credentials.val,
+                effective_balance: validator.effective_balance,
+                slashed: validator.slashed,
+                activation_eligibility_epoch: validator.activation_eligibility_epoch,
+                activation_epoch: validator.activation_epoch,
+                exit_epoch: validator.exit_epoch,
+                withdrawable_epoch: validator.withdrawable_epoch,
+            }
+            checked(
+                verify_validator(beacon_root: root, index, validator: record, branch),
+            )
+            header.slot
+        }
+    }
+}

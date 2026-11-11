@@ -39,13 +39,17 @@ fn expect_slots<const N: usize, const M: usize, const S: usize, const K: usize>(
     _ bytes: [u8; N],
     _ offsets: [usize; M],
     _ starts: [usize; S],
-    _ counts: [usize; K],
     _ keys: [u256; K],
     _ values: [u256; K],
 ) {
     var slot: usize = 0
     while slot < K {
-        let nodes = NodeList::from_fixture(bytes, offsets, first: starts[slot], count: counts[slot])
+        let nodes = NodeList::from_fixture(
+            bytes,
+            offsets,
+            first: starts[slot],
+            count: starts[slot + 1] - starts[slot],
+        )
         match verify_storage(
             storage_root: StorageRoot::new(storage_root),
             slot: keys[slot],
@@ -132,7 +136,6 @@ fn usdc_account_and_slot_decode_to_the_oracle_values() {
         mainnet_storage_usdc::SLOT_BYTES,
         mainnet_storage_usdc::SLOT_OFFSETS,
         mainnet_storage_usdc::SLOT_NODE_STARTS,
-        mainnet_storage_usdc::SLOT_NODE_COUNTS,
         mainnet_storage_usdc::SLOT_KEYS,
         mainnet_storage_usdc::SLOT_VALUES,
     )
@@ -145,7 +148,6 @@ fn absent_slot_is_proven_zero() {
         mainnet_storage_absent::SLOT_BYTES,
         mainnet_storage_absent::SLOT_OFFSETS,
         mainnet_storage_absent::SLOT_NODE_STARTS,
-        mainnet_storage_absent::SLOT_NODE_COUNTS,
         mainnet_storage_absent::SLOT_KEYS,
         mainnet_storage_absent::SLOT_VALUES,
     )
@@ -178,7 +180,6 @@ fn weth_account_and_three_slots_decode_to_the_oracle_values() {
         mainnet_storage_weth::SLOT_BYTES,
         mainnet_storage_weth::SLOT_OFFSETS,
         mainnet_storage_weth::SLOT_NODE_STARTS,
-        mainnet_storage_weth::SLOT_NODE_COUNTS,
         mainnet_storage_weth::SLOT_KEYS,
         mainnet_storage_weth::SLOT_VALUES,
     )

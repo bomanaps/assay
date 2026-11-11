@@ -38,7 +38,13 @@ README_HEADER = (
     "`storage`) come from `eth_getProof`; their command reproduces the file given the same chain "
     "history. Beacon fixtures (kind `beacon_chain` or `beacon_validator`) come from "
     "`tools/capture_beacon.py`: the chain capture takes the head minus two blocks, and the validator "
-    "capture needs the finalized state named in its row.\n\n"
+    "capture needs the finalized state named in its row. `synthetic_tries` is not captured: "
+    "`tools/synth_trie.py generate` builds it from a fixed seed, and `synth_trie.py check` proves the "
+    "committed file is what that seed gives. `ethereum_tests/` holds five trie vector files copied "
+    "unchanged from ethereum/tests commit c67e485ff8b5be9abc8ad15345ec21aa22e290d9 (`TrieTests/`, MIT, "
+    "license alongside); `test_oracles.py` checks that `synth_trie.py` rebuilds every root in them, and "
+    "`tools/spec_crosscheck.py` checks the synthetic roots and these vectors against the trie of "
+    "ethereum/execution-specs at the commit in `tools/requirements-spec.txt`.\n\n"
     "Check every fixture with `python3 -I tools/oracle_mpt.py fixtures/*.json` and "
     "`python3 -I tools/oracle_ssz.py fixtures/*.json`; each tool checks the kinds it knows and skips "
     "the rest.\n\n"
@@ -46,10 +52,10 @@ README_HEADER = (
     "| captured (UTC) | command |\n"
     "|---|---|---|---|---|---|---|---|\n"
 )
-NAME_PATTERN = re.compile(r"^[a-z0-9_]+$")
-HEX_PATTERN = re.compile(r"^(0x)?[0-9a-fA-F]+$")
-ADDRESS_PATTERN = re.compile(r"^0x[0-9a-f]{40}$")
-DECIMAL_PATTERN = re.compile(r"^[0-9]+$")
+NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+HEX_PATTERN = re.compile(r"(0x)?[0-9a-fA-F]+")
+ADDRESS_PATTERN = re.compile(r"0x[0-9a-f]{40}")
+DECIMAL_PATTERN = re.compile(r"[0-9]+")
 MPT_KINDS = ("account", "storage")
 
 
@@ -80,7 +86,7 @@ def rpc(url, method, params):
 
 
 def slot_word(text):
-    if not HEX_PATTERN.match(text):
+    if not HEX_PATTERN.fullmatch(text):
         fail(f"slot is not hex: {text}")
     digits = text[2:] if text.startswith("0x") else text
     if len(digits) > 64:
@@ -91,7 +97,7 @@ def slot_word(text):
 def parse_block(text):
     if text in ("finalized", "latest"):
         return text
-    if not DECIMAL_PATTERN.match(text):
+    if not DECIMAL_PATTERN.fullmatch(text):
         fail(f"block must be a decimal number, finalized, or latest: {text}")
     return hex(int(text))
 
@@ -106,9 +112,9 @@ def block_header(url, tag):
 
 
 def build_fixture(url, name, address, header, slots):
-    if not NAME_PATTERN.match(name):
+    if not NAME_PATTERN.fullmatch(name):
         fail(f"bad fixture name: {name}")
-    if not ADDRESS_PATTERN.match(address):
+    if not ADDRESS_PATTERN.fullmatch(address):
         fail(f"bad address: {address}")
     chain_id = int(rpc(url, "eth_chainId", []), 16)
     proof = rpc(url, "eth_getProof", [address, slots, {"blockHash": header["hash"]}])

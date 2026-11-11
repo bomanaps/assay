@@ -9,7 +9,16 @@ account is compared with the fields the RPC returned. Every storage proof is
 walked from the account's storage root to the slot's value and compared with
 the RPC value. A key that the trie does not contain is reported as absent,
 which must agree with an RPC value of zero or an RPC account with the four
-default fields. The exit status is nonzero on any disagreement.
+default fields. Clients report an absent account's storageHash and codeHash
+either as the empty trie root and empty code hash (geth) or as zero (seen from
+publicnode and Alchemy in November 2026); both are accepted, and only when the
+walk itself proves the account absent. The exit status is nonzero on any disagreement.
+
+A synthetic trie fixture (kind synthetic_trie, from synth_trie.py) lists each
+trie's root, its hashed nodes, and cases of a key, the value it claims or null
+for an absent key, and the indices of the nodes in the key's proof. Every case
+is walked from the root and must reach exactly the claimed value, keys may not
+repeat within a trie, and every listed node must be used by some proof.
 
 A child reference shorter than 32 bytes is the child node embedded in its
 parent. The walk descends into such a child directly; eth_getProof does not
@@ -27,6 +36,7 @@ from Crypto.Hash import keccak
 
 EMPTY_STORAGE_ROOT = bytes.fromhex("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 EMPTY_CODE_HASH = bytes.fromhex("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+ABSENT_ACCOUNT_ZEROS = (0, 0, bytes(32), bytes(32))
 
 HEADER_FIELDS = [
     ("parentHash", "hash"),
@@ -296,7 +306,7 @@ def analyze(fixture):
     if (kind == "storage") != bool(proof["storageProof"]):
         raise ProofError(f"kind {kind} does not match {len(proof['storageProof'])} storage proofs")
     chain_id = fixture["chainId"]
-    if not isinstance(chain_id, int) or chain_id <= 0:
+    if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id <= 0:
         raise ProofError(f"chain id {chain_id!r} is not a positive integer")
     header_rlp = check_header(header)
     state_root = hex_bytes(header["stateRoot"], 32)
@@ -327,12 +337,15 @@ def analyze(fixture):
         hex_bytes(proof["storageHash"], 32),
         hex_bytes(proof["codeHash"], 32),
     )
-    if (nonce, balance, storage_root, code_hash) != expected:
+    decoded = (nonce, balance, storage_root, code_hash)
+    if decoded != expected and not (not present and expected == ABSENT_ACCOUNT_ZEROS):
         raise ProofError("decoded account disagrees with the rpc account fields")
 
     slots = []
     for entry in proof["storageProof"]:
         slot = hex_bytes(entry["key"], 32)
+        if any(s["key"] == slot for s in slots):
+            raise ProofError(f"slot {entry['key']} is proven twice")
         slot_nodes = [hex_bytes(n) for n in entry["proof"]]
         if storage_root == EMPTY_STORAGE_ROOT:
             if slot_nodes:
@@ -380,6 +393,43 @@ def analyze(fixture):
     }
 
 
+SYNTHETIC_KIND = "synthetic_trie"
+
+
+def analyze_synthetic(fixture):
+    if fixture.get("kind") != SYNTHETIC_KIND:
+        raise ProofError(f"not a synthetic trie fixture: kind {fixture.get('kind')!r}")
+    tries = []
+    for t, entry in enumerate(fixture["tries"]):
+        root = hex_bytes(entry["root"], 32)
+        nodes = [hex_bytes(n) for n in entry["nodes"]]
+        if len(set(nodes)) != len(nodes):
+            raise ProofError(f"trie {t} lists a node twice")
+        used = set()
+        keys = set()
+        cases = []
+        for c, case in enumerate(entry["cases"]):
+            key = hex_bytes(case["key"], 32)
+            if key in keys:
+                raise ProofError(f"trie {t} case {c} repeats a key")
+            keys.add(key)
+            proof = case["proof"]
+            if not proof or any(not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(nodes) for i in proof):
+                raise ProofError(f"trie {t} case {c} has a bad proof index list")
+            used.update(proof)
+            found = walk(root, key, [nodes[i] for i in proof])
+            claimed = None if case["value"] is None else hex_bytes(case["value"])
+            if claimed == b"":
+                raise ProofError(f"trie {t} case {c} claims an empty value")
+            if found != claimed:
+                raise ProofError(f"trie {t} case {c} walks to a value the fixture does not claim")
+            cases.append({"key": key, "value": found, "proof": proof})
+        if used != set(range(len(nodes))):
+            raise ProofError(f"trie {t} lists nodes no proof uses")
+        tries.append({"root": root, "nodes": nodes, "cases": cases})
+    return tries
+
+
 def check_fixture(fixture):
     result = analyze(fixture)
     report = [f"header hash verified, {len(result['header_rlp'])} rlp bytes"]
@@ -404,6 +454,12 @@ def main(argv):
         path = pathlib.Path(text)
         try:
             fixture = json.loads(path.read_text())
+            if fixture.get("kind") == SYNTHETIC_KIND:
+                tries = analyze_synthetic(fixture)
+                present = sum(1 for t in tries for c in t["cases"] if c["value"] is not None)
+                absent = sum(1 for t in tries for c in t["cases"] if c["value"] is None)
+                print(f"ok   {path.name}: {len(tries)} tries, {present} present and {absent} absent keys walked")
+                continue
             if fixture.get("kind") not in MPT_KINDS:
                 print(f"skip {path.name}: kind {fixture.get('kind')}")
                 continue

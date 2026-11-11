@@ -16,16 +16,17 @@ Trie fixtures (kind account or storage): proof nodes are concatenated into one
 byte array, and an offsets array marks where each node starts, with one extra
 entry equal to the total length. Storage proofs for every slot are
 concatenated the same way; SLOT_NODE_STARTS gives, per slot, the index into
-SLOT_OFFSETS where that slot's nodes begin, and SLOT_NODE_COUNTS the number of
-nodes per slot. Values are the oracle's decoded results.
+SLOT_OFFSETS where that slot's nodes begin, with one extra entry for the end.
+Values are the oracle's decoded results. Every constant is pub(ingot): tests in
+this ingot read them, and a dependent ingot cannot.
 
 Beacon fixtures (kind beacon_chain or beacon_validator): the five header
 fields, BLOCK_ROOT, CHILD_TIMESTAMP (the EIP-4788 key), and for every proven
 field <FIELD>_GINDEX, <FIELD>_LEAF and <FIELD>_BRANCH, the branch ordered from
 the leaf's sibling up to the root's child. A leaf or sibling is the 32-byte
 chunk read as a big-endian word. Validator modules also hold the validator's
-index, PUBKEY bytes and EFFECTIVE_BALANCE, from which a test can rebuild the
-pubkey and balance leaves.
+index and all eight fields of its record, from which a test can rebuild the
+record's root and the pubkey and balance leaves.
 """
 
 import json
@@ -51,15 +52,15 @@ def word(data):
 
 
 def const(name, type_name, value):
-    return f"pub const {name}: {type_name} = {value}\n"
+    return f"pub(ingot) const {name}: {type_name} = {value}\n"
 
 
 def array(name, type_name, items):
-    single = f"pub const {name}: [{type_name}; {len(items)}] = [{', '.join(items)}]\n"
+    single = f"pub(ingot) const {name}: [{type_name}; {len(items)}] = [{', '.join(items)}]\n"
     if len(single) - 1 <= MAX_WIDTH:
         return single
     body = "\n".join(f"    {item}," for item in items)
-    return f"pub const {name}: [{type_name}; {len(items)}] = [\n{body}\n]\n"
+    return f"pub(ingot) const {name}: [{type_name}; {len(items)}] = [\n{body}\n]\n"
 
 
 def byte_array(name, data):
@@ -72,6 +73,12 @@ def usize_array(name, values):
 
 def word_array(name, values):
     return array(name, "u256", [word(v) for v in values])
+
+
+def packed_bytes(name, data):
+    padded = bytes(data) + bytes(-len(data) % 32)
+    words = [padded[i : i + 32] for i in range(0, len(padded), 32)]
+    return const(f"{name}_LEN", "usize", len(data)) + word_array(f"{name}_WORDS", words)
 
 
 def bool_array(name, values):
@@ -109,7 +116,6 @@ def render_trie(fixture):
         bool_array("SLOT_PRESENT", [s["present"] for s in result["slots"]]),
         array("SLOT_VALUES", "u256", [str(s["value"]) for s in result["slots"]]),
         usize_array("SLOT_NODE_STARTS", slot_starts),
-        usize_array("SLOT_NODE_COUNTS", [len(s["nodes"]) for s in result["slots"]]),
         usize_array("SLOT_OFFSETS", slot_offsets),
         byte_array("SLOT_BYTES", slot_bytes),
     ]
@@ -129,6 +135,7 @@ VALIDATOR_PROOFS = {
 STATE_PROOFS = {
     "genesis_validators_root": "GENESIS_VALIDATORS_ROOT",
     "fork.current_version": "FORK_VERSION",
+    "latest_execution_payload_header.block_hash": "LATEST_BLOCK_HASH",
 }
 
 
@@ -156,17 +163,58 @@ def render_beacon(fixture):
     if result["kind"] == "beacon_chain":
         names = CHAIN_PROOFS
     else:
+        record = result["record"]
         parts += [
             const("VALIDATOR_INDEX", "u64", result["index"]),
             byte_array("PUBKEY", result["pubkey"]),
+            const("WITHDRAWAL_CREDENTIALS", "u256", word(record["withdrawal_credentials"])),
             const("EFFECTIVE_BALANCE", "u64", result["balance"]),
+            const("SLASHED", "bool", "true" if record["slashed"] else "false"),
         ]
+        parts += [const(name.upper(), "u64", record[name]) for name in oracle_ssz.VALIDATOR_EPOCHS]
         names = {result["prefix"] + field: name for field, name in VALIDATOR_PROOFS.items()}
+        names[result["prefix"][:-1]] = "VALIDATOR"
         names.update(STATE_PROOFS)
     if set(names) != set(proofs):
         raise ValueError(f"proof fields {sorted(proofs)} differ from {sorted(names)}")
     for field in sorted(names):
         parts += proof_constants(names[field], proofs[field])
+    return "".join(parts)
+
+
+def render_synthetic(fixture):
+    tries = oracle_mpt.analyze_synthetic(fixture)
+    roots, node_offsets, node_bytes = [], [0], bytearray()
+    case_trie, keys, present, value_offsets, value_bytes = [], [], [], [0], bytearray()
+    proof_starts, proof_nodes = [0], []
+    for t, trie in enumerate(tries):
+        roots.append(trie["root"])
+        first = len(node_offsets) - 1
+        for node in trie["nodes"]:
+            node_bytes.extend(node)
+            node_offsets.append(len(node_bytes))
+        for case in trie["cases"]:
+            case_trie.append(t)
+            keys.append(case["key"])
+            present.append(case["value"] is not None)
+            value_bytes.extend(case["value"] or b"")
+            value_offsets.append(len(value_bytes))
+            proof_nodes.extend(first + i for i in case["proof"])
+            proof_starts.append(len(proof_nodes))
+    parts = [
+        const("TRIE_COUNT", "usize", len(tries)),
+        const("CASE_COUNT", "usize", len(keys)),
+        word_array("ROOTS", roots),
+        usize_array("CASE_TRIE", case_trie),
+        word_array("CASE_KEYS", keys),
+        bool_array("CASE_PRESENT", present),
+        usize_array("VALUE_OFFSETS", value_offsets),
+        packed_bytes("VALUE_BYTES", value_bytes),
+        usize_array("PROOF_STARTS", proof_starts),
+        usize_array("PROOF_NODES", proof_nodes),
+        usize_array("NODE_OFFSETS", node_offsets),
+        packed_bytes("NODE_BYTES", node_bytes),
+    ]
     return "".join(parts)
 
 
@@ -186,6 +234,8 @@ def expected_files():
                 text = render_trie(fixture)
             elif kind in oracle_ssz.BEACON_KINDS:
                 text = render_beacon(fixture)
+            elif kind == oracle_mpt.SYNTHETIC_KIND:
+                text = render_synthetic(fixture)
             else:
                 raise ValueError(f"unknown fixture kind {kind!r}")
         except (oracle_mpt.ProofError, oracle_ssz.CheckError, KeyError, TypeError, ValueError) as e:

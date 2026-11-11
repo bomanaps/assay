@@ -74,7 +74,7 @@ fn storage_verifies_through_an_abi_bytes_array() {
         u::SLOT_BYTES,
         u::SLOT_OFFSETS,
         first: 0,
-        count: u::SLOT_NODE_COUNTS[0],
+        count: u::SLOT_NODE_STARTS[1] - u::SLOT_NODE_STARTS[0],
     )
     match verify_storage(
         storage_root: StorageRoot::new(u::STORAGE_ROOT),

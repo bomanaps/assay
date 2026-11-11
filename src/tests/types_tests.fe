@@ -133,7 +133,7 @@ fn proven_equality_is_symmetric_and_payload_aware() {
 
 #[test]
 fn proof_errors_equal_only_themselves() {
-    let errors: [ProofError; 10] = [
+    let errors: [ProofError; 11] = [
         ProofError::BadRlp,
         ProofError::HashMismatch(3),
         ProofError::PathExhausted,
@@ -144,11 +144,12 @@ fn proof_errors_equal_only_themselves() {
         ProofError::RootMismatch,
         ProofError::KeyNotConsumed,
         ProofError::IndexOutOfRange,
+        ProofError::WrongLength,
     ]
     var i: usize = 0
-    while i < 10 {
+    while i < 11 {
         var j: usize = 0
-        while j < 10 {
+        while j < 11 {
             core::assert((errors[i] == errors[j]) == (i == j))
             j += 1
         }

@@ -41,12 +41,14 @@ pub enum PayloadField {
 }
 
 impl PayloadField {
-    pub const fn gindex(self) -> u256 {
-        match self {
-            Self::StateRoot => PAYLOAD_STATE_ROOT,
-            Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
-            Self::BlockHash => PAYLOAD_BLOCK_HASH,
-        }
+    pub const fn gindex(self) -> GIndex {
+        GIndex::new(
+            match self {
+                Self::StateRoot => PAYLOAD_STATE_ROOT,
+                Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
+                Self::BlockHash => PAYLOAD_BLOCK_HASH,
+            },
+        )
     }
 }
 
@@ -56,11 +58,13 @@ pub enum StateField {
 }
 
 impl StateField {
-    pub const fn gindex(self) -> u256 {
-        match self {
-            Self::GenesisValidatorsRoot => STATE_GENESIS_VALIDATORS_ROOT,
-            Self::ForkCurrentVersion => STATE_FORK_CURRENT_VERSION,
-        }
+    pub const fn gindex(self) -> GIndex {
+        GIndex::new(
+            match self {
+                Self::GenesisValidatorsRoot => STATE_GENESIS_VALIDATORS_ROOT,
+                Self::ForkCurrentVersion => STATE_FORK_CURRENT_VERSION,
+            },
+        )
     }
 }
 
@@ -80,17 +84,31 @@ impl ValidatorField {
     }
 }
 
-pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> u256 {
+pub const fn validator_element_gindex(_ index: u64) -> GIndex {
     if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
         core::panic_code(PANIC_ASSERT)
     }
-    let element = concat(VALIDATORS_DATA, VALIDATOR_REGISTRY_LIMIT + index as u256)
-    concat(element, field(VALIDATOR_FIELDS, which.index()))
+    GIndex::new(
+        concat(VALIDATORS_DATA, VALIDATOR_REGISTRY_LIMIT + index as u256),
+    )
 }
 
-static_assert(validator_gindex(0, ValidatorField::Pubkey) == 12578413021757440)
-static_assert(validator_gindex(0, ValidatorField::WithdrawalCredentials) == 12578413021757441)
-static_assert(validator_gindex(2345678, ValidatorField::EffectiveBalance) == 12578413040522866)
+pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> GIndex {
+    GIndex::new(
+        concat(
+            validator_element_gindex(index).value(),
+            field(VALIDATOR_FIELDS, which.index()),
+        ),
+    )
+}
+
+static_assert(validator_element_gindex(0).value() == 1572301627719680)
+static_assert(validator_element_gindex(2345678).value() == 1572301630065358)
+static_assert(validator_gindex(0, ValidatorField::Pubkey).value() == 12578413021757440)
+static_assert(validator_gindex(0, ValidatorField::WithdrawalCredentials).value()
+    == 12578413021757441)
+static_assert(validator_gindex(2345678, ValidatorField::EffectiveBalance).value()
+    == 12578413040522866)
 
 pub struct BeaconBlockHeader {
     pub slot: u64,
@@ -113,6 +131,40 @@ impl BeaconBlockHeader {
     }
 }
 
+pub struct Validator {
+    pub pubkey_root: u256,
+    pub withdrawal_credentials: u256,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: u64,
+    pub activation_epoch: u64,
+    pub exit_epoch: u64,
+    pub withdrawable_epoch: u64,
+}
+
+impl Copy for Validator {}
+
+impl Validator {
+    pub fn root(self) -> u256 {
+        let slashed: u256 = if self.slashed { 1 << 248 } else { 0 }
+        let left = hash_pair(
+            hash_pair(self.pubkey_root, self.withdrawal_credentials),
+            hash_pair(u64_chunk(self.effective_balance), slashed),
+        )
+        let right = hash_pair(
+            hash_pair(
+                u64_chunk(self.activation_eligibility_epoch),
+                u64_chunk(self.activation_epoch),
+            ),
+            hash_pair(
+                u64_chunk(self.exit_epoch),
+                u64_chunk(self.withdrawable_epoch),
+            ),
+        )
+        hash_pair(left, right)
+    }
+}
+
 pub fn verify_payload_field<P: ProofNodes>(
     beacon_root: BeaconRoot,
     which: PayloadField,
@@ -122,7 +174,7 @@ pub fn verify_payload_field<P: ProofNodes>(
     verify_branch(
         root: beacon_root.as_root(),
         leaf,
-        gindex: GIndex::new(which.gindex()),
+        gindex: which.gindex(),
         branch,
     )
 }
@@ -150,7 +202,24 @@ pub fn verify_state_field<P: ProofNodes>(
     verify_branch(
         root: beacon_root.as_root(),
         leaf,
-        gindex: GIndex::new(which.gindex()),
+        gindex: which.gindex(),
+        branch,
+    )
+}
+
+pub fn verify_validator<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    index: u64,
+    validator: Validator,
+    branch: P,
+) -> Result<ProofError, ()> {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf: validator.root(),
+        gindex: validator_element_gindex(index),
         branch,
     )
 }
@@ -168,7 +237,7 @@ pub fn verify_validator_field<P: ProofNodes>(
     verify_branch(
         root: beacon_root.as_root(),
         leaf,
-        gindex: GIndex::new(validator_gindex(index, which)),
+        gindex: validator_gindex(index, which),
         branch,
     )
 }

@@ -8,9 +8,11 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import capture_getproof
 import gen_fixtures
 import oracle_mpt
 import oracle_ssz
+import synth_trie
 
 FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -81,9 +83,47 @@ class TrieOracle(unittest.TestCase):
         f["proof"]["balance"] = "0x1"
         self.rejects(f, "decoded account disagrees with the rpc account fields")
 
+    def test_chain_id_that_is_a_boolean(self):
+        f = load("mainnet_account_eoa")
+        f["chainId"] = True
+        self.rejects(f, "is not a positive integer")
+
+    def test_slot_proven_twice(self):
+        f = load("mainnet_storage_weth")
+        f["proof"]["storageProof"].append(copy.deepcopy(f["proof"]["storageProof"][0]))
+        self.rejects(f, "is proven twice")
+
     def test_absent_account_claimed_present(self):
         f = load("mainnet_account_absent")
         f["proof"]["nonce"] = "0x1"
+        self.rejects(f, "decoded account disagrees with the rpc account fields")
+
+    def test_absent_account_reported_with_zero_hashes(self):
+        f = load("mainnet_account_absent")
+        f["proof"]["storageHash"] = "0x" + "00" * 32
+        f["proof"]["codeHash"] = "0x" + "00" * 32
+        self.assertFalse(oracle_mpt.analyze(f)["present"])
+
+    def test_zero_hashes_with_a_nonzero_nonce(self):
+        f = load("mainnet_account_absent")
+        f["proof"]["storageHash"] = "0x" + "00" * 32
+        f["proof"]["codeHash"] = "0x" + "00" * 32
+        f["proof"]["nonce"] = "0x1"
+        self.rejects(f, "decoded account disagrees with the rpc account fields")
+
+    def test_present_account_reported_with_zero_hashes(self):
+        f = load("mainnet_storage_weth")
+        f["proof"]["nonce"] = "0x0"
+        f["proof"]["balance"] = "0x0"
+        f["proof"]["storageHash"] = "0x" + "00" * 32
+        f["proof"]["codeHash"] = "0x" + "00" * 32
+        f["proof"]["storageProof"] = []
+        f["kind"] = "account"
+        self.rejects(f, "decoded account disagrees with the rpc account fields")
+
+    def test_absent_account_with_only_one_zero_hash(self):
+        f = load("mainnet_account_absent")
+        f["proof"]["codeHash"] = "0x" + "00" * 32
         self.rejects(f, "decoded account disagrees with the rpc account fields")
 
     def test_header_does_not_hash_to_its_hash(self):
@@ -183,6 +223,16 @@ class TrieRules(unittest.TestCase):
         self.raises("short list", oracle_mpt.rlp_split, bytes([0xC3, 0x01]))
         self.raises("short item", oracle_mpt.rlp_split, bytes([0xB8, 0x38]) + bytes(10))
         self.raises("trailing bytes after rlp item", oracle_mpt.rlp_decode, bytes([0x01, 0x02]))
+
+    def test_quantity_rules(self):
+        self.raises("not a canonical quantity", oracle_mpt.to_int, "0x1_0")
+        self.raises("not a canonical quantity", oracle_mpt.to_int, "0xA")
+        self.raises("not a canonical quantity", oracle_mpt.to_int, "0x01")
+        self.assertEqual(oracle_mpt.to_int("0x10"), 16)
+
+    def test_walk_rejects_a_node_that_is_not_a_list(self):
+        node = oracle_mpt.rlp_encode_bytes(b"\x01" * 40)
+        self.raises("node 0 is not a list", oracle_mpt.walk, oracle_mpt.keccak256(node), bytes(32), [node])
 
     def test_hex_prefix_rules(self):
         self.raises("empty hex prefix path", oracle_mpt.decode_hex_prefix, b"")
@@ -339,7 +389,53 @@ class BeaconOracle(unittest.TestCase):
         f = load("chain_beacon")
         f["execution"]["header"]["stateRoot"] = flip(f["execution"]["header"]["stateRoot"])
         relink(f["execution"])
-        self.rejects(f, "listed trie fixture chain_storage_usdc is from a different block")
+        self.rejects(f, "execution_payload.state_root: leaf")
+
+    def test_execution_header_that_does_not_hash_to_its_hash(self):
+        f = load("validator_beacon")
+        f["execution"]["header"]["gasUsed"] = hex(int(f["execution"]["header"]["gasUsed"], 16) + 1)
+        self.rejects(f, "execution header: header hashes to")
+
+    def test_validator_execution_block_not_named_by_the_state(self):
+        f = load("validator_beacon")
+        f["execution"]["header"]["stateRoot"] = flip(f["execution"]["header"]["stateRoot"])
+        relink(f["execution"])
+        self.rejects(f, "latest_execution_payload_header.block_hash: leaf")
+
+    def test_child_timestamp_off_the_slot_grid(self):
+        for name in ("chain_beacon", "validator_beacon"):
+            f = load(name)
+            child = f["execution"]["childHeader"]
+            child["timestamp"] = hex(int(child["timestamp"], 16) + 7)
+            rehash(child)
+            self.rejects(f, "is not a later slot time")
+
+    def test_child_timestamp_not_after_the_block(self):
+        f = load("validator_beacon")
+        child = f["execution"]["childHeader"]
+        child["timestamp"] = f["execution"]["header"]["timestamp"]
+        rehash(child)
+        self.rejects(f, "is not a later slot time")
+
+    def test_trie_links_must_not_be_empty(self):
+        f = load("chain_beacon")
+        f["execution"]["mptFixtures"] = []
+        self.rejects(f, "must list distinct fixture names")
+
+    def test_trie_link_must_be_a_fixture_name(self):
+        f = load("chain_beacon")
+        f["execution"]["mptFixtures"] = ["../fixtures/chain_storage_usdc"]
+        self.rejects(f, "is not a fixture name")
+
+    def test_trie_link_file_must_hold_that_fixture(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            scratch_dir = pathlib.Path(scratch)
+            for path in FIXTURES.glob("*.json"):
+                shutil.copy(path, scratch_dir / path.name)
+            shutil.copy(FIXTURES / "chain_storage_weth.json", scratch_dir / "chain_storage_copy.json")
+            f = load("chain_beacon")
+            f["execution"]["mptFixtures"].append("chain_storage_copy")
+            self.rejects(f, "holds another fixture", scratch_dir)
 
     def test_listed_trie_fixture_missing(self):
         f = load("chain_beacon")
@@ -370,20 +466,34 @@ class BeaconOracle(unittest.TestCase):
             proof["field"] = proof["field"].replace(f"[{old}]", f"[{old + 1}]")
         self.rejects(f, "gindex")
 
-    def test_validator_balance_changed(self):
-        f = load("validator_beacon")
-        f["validator"]["effective_balance"] = "31000000000"
-        self.rejects(f, "effective_balance: leaf")
+    def test_every_record_field_is_bound_to_the_record_proof(self):
+        changes = {
+            "pubkey": lambda v: flip(v),
+            "withdrawal_credentials": lambda v: flip(v),
+            "effective_balance": lambda v: str(int(v) - 1000000000),
+            "slashed": lambda v: not v,
+            "activation_eligibility_epoch": lambda v: str(int(v) + 1),
+            "activation_epoch": lambda v: str(int(v) + 1),
+            "exit_epoch": lambda v: str(int(v) - 1),
+            "withdrawable_epoch": lambda v: str(int(v) - 1),
+        }
+        self.assertEqual(set(changes), oracle_ssz.VALIDATOR_RECORD_KEYS)
+        for name, change in changes.items():
+            f = load("validator_beacon")
+            f["validator"][name] = change(f["validator"][name])
+            self.rejects(f, f"validators[{f['validatorIndex']}]: leaf")
 
-    def test_validator_pubkey_changed(self):
-        f = load("validator_beacon")
-        f["validator"]["pubkey"] = flip(f["validator"]["pubkey"])
-        self.rejects(f, "pubkey: leaf")
+    def test_field_proof_leaves_must_encode_the_record(self):
+        for name in ("pubkey", "withdrawal_credentials", "effective_balance"):
+            f = load("validator_beacon")
+            proof = next(p for p in f["proofs"] if p["field"].endswith("." + name))
+            proof["leaf"] = flip(proof["leaf"])
+            self.rejects(f, f"{name}: leaf")
 
-    def test_validator_credentials_changed(self):
+    def test_slashed_must_be_a_boolean(self):
         f = load("validator_beacon")
-        f["validator"]["withdrawal_credentials"] = flip(f["validator"]["withdrawal_credentials"])
-        self.rejects(f, "withdrawal_credentials: leaf")
+        f["validator"]["slashed"] = 0
+        self.rejects(f, "slashed is not a boolean")
 
     def test_non_mainnet_genesis_root(self):
         f = load("validator_beacon")
@@ -400,6 +510,22 @@ class BeaconOracle(unittest.TestCase):
         f = load("validator_beacon")
         f["capture"]["finalized"] = False
         self.rejects(f, "finalized canonical")
+
+    def test_capture_not_canonical(self):
+        f = load("validator_beacon")
+        f["capture"]["canonical"] = False
+        self.rejects(f, "finalized canonical")
+
+    def test_capture_flags_must_be_booleans(self):
+        f = load("validator_beacon")
+        f["capture"] = {"finalized": 1, "canonical": 1}
+        self.rejects(f, "finalized canonical")
+
+    def test_decimal_rules(self):
+        for text in ("+5", "\u0663", "05", "", 5):
+            with self.assertRaises(oracle_ssz.CheckError):
+                oracle_ssz.decimal(text, "value")
+        self.assertEqual(oracle_ssz.decimal("0", "value"), 0)
 
     def test_slot_before_fulu(self):
         f = load("chain_beacon")
@@ -444,6 +570,191 @@ class BeaconOracle(unittest.TestCase):
         self.rejects(f, "not a beacon fixture")
 
 
+ETHEREUM_TESTS = FIXTURES / "ethereum_tests"
+SECURE_VECTORS = ("hex_encoded_securetrie_test.json", "trieanyorder_secureTrie.json", "trietest_secureTrie.json")
+RAW_VECTORS = ("trieanyorder.json", "trietest.json")
+
+
+def vector_bytes(text):
+    if text.startswith("0x"):
+        return bytes.fromhex(text[2:])
+    return text.encode()
+
+
+def vector_entries(case, secure):
+    steps = case["in"].items() if isinstance(case["in"], dict) else case["in"]
+    entries = {}
+    for key, value in steps:
+        path = vector_bytes(key)
+        if secure:
+            path = synth_trie.keccak256(path)
+        if value is None:
+            entries.pop(path, None)
+        else:
+            entries[path] = vector_bytes(value)
+    return entries
+
+
+def vector_root(entries):
+    if not entries:
+        return oracle_mpt.EMPTY_STORAGE_ROOT
+    return synth_trie.Trie(entries).root_hash
+
+
+class EthereumTrieVectors(unittest.TestCase):
+    def cases(self, names):
+        for name in names:
+            for label, case in json.loads((ETHEREUM_TESTS / name).read_text()).items():
+                yield f"{name}:{label}", case
+
+    def test_builder_reproduces_every_official_root(self):
+        count = 0
+        for label, case in self.cases(SECURE_VECTORS + RAW_VECTORS):
+            entries = vector_entries(case, secure=label.split(":")[0] in SECURE_VECTORS)
+            self.assertEqual(vector_root(entries), vector_bytes(case["root"]), label)
+            count += 1
+        self.assertEqual(count, 25)
+
+    def test_raw_vectors_reach_extensions_embedded_nodes_and_branch_values(self):
+        kinds = set()
+
+        def visit(node, top):
+            if node is None:
+                return
+            if not top and node.embedded():
+                kinds.add("embedded_" + node.kind)
+            kinds.add(node.kind)
+            if node.kind == "branch":
+                if node.value is not None:
+                    kinds.add("branch_value")
+                for child in node.children:
+                    visit(child, False)
+            elif node.kind == "extension":
+                visit(node.child, False)
+
+        for label, case in self.cases(RAW_VECTORS):
+            entries = vector_entries(case, secure=False)
+            if entries:
+                visit(synth_trie.Trie(entries).root, True)
+        self.assertTrue({"extension", "branch_value", "embedded_leaf", "embedded_branch"} <= kinds, kinds)
+
+    def test_oracle_walks_every_secure_key_to_its_value(self):
+        walked = 0
+        for label, case in self.cases(SECURE_VECTORS):
+            entries = vector_entries(case, secure=True)
+            if not entries:
+                continue
+            trie = synth_trie.Trie(entries)
+            for key, value in entries.items():
+                proof, found, _ = trie.lookup(key)
+                self.assertEqual(found, value, label)
+                self.assertEqual(oracle_mpt.walk(trie.root_hash, key, [trie.nodes[i] for i in proof]), value, label)
+                walked += 1
+        self.assertGreater(walked, 30)
+
+
+class CaptureInputs(unittest.TestCase):
+    def test_slot_words(self):
+        self.assertEqual(capture_getproof.slot_word("0"), "0x" + "0" * 64)
+        self.assertEqual(capture_getproof.slot_word("0xA55A70FF"), "0x" + "0" * 56 + "a55a70ff")
+        for bad in ("0xg1", "1" * 65, "12\n", ""):
+            with self.assertRaises(SystemExit):
+                capture_getproof.slot_word(bad)
+
+    def test_block_arguments(self):
+        self.assertEqual(capture_getproof.parse_block("26375550"), "0x192757e")
+        self.assertEqual(capture_getproof.parse_block("finalized"), "finalized")
+        for bad in ("0x10", "-1", "1\n", "safe"):
+            with self.assertRaises(SystemExit):
+                capture_getproof.parse_block(bad)
+
+    def test_fixture_names(self):
+        for good in ("chain_beacon", "a", "validator_2"):
+            self.assertTrue(capture_getproof.NAME_PATTERN.fullmatch(good))
+        for bad in ("1abc", "abc\n", "Abc", "a-b", "fork.current_version", ""):
+            self.assertFalse(capture_getproof.NAME_PATTERN.fullmatch(bad))
+
+
+class SyntheticTries(unittest.TestCase):
+    def rejects(self, change, message):
+        f = load("synthetic_tries")
+        change(f)
+        with self.assertRaises(oracle_mpt.ProofError) as caught:
+            oracle_mpt.analyze_synthetic(f)
+        self.assertIn(message, str(caught.exception))
+
+    def first(self, f, present):
+        return next(c for c in f["tries"][1]["cases"] if (c["value"] is not None) == present)
+
+    def test_committed_set_passes(self):
+        tries = oracle_mpt.analyze_synthetic(load("synthetic_tries"))
+        self.assertEqual(len(tries), synth_trie.TRIE_COUNT)
+
+    def test_wrong_kind(self):
+        self.rejects(lambda f: f.update(kind="storage"), "not a synthetic trie fixture")
+
+    def test_node_listed_twice(self):
+        self.rejects(lambda f: f["tries"][1]["nodes"].append(f["tries"][1]["nodes"][0]), "lists a node twice")
+
+    def test_unused_node(self):
+        self.rejects(lambda f: f["tries"][1]["nodes"].append(f["tries"][2]["nodes"][0]), "lists nodes no proof uses")
+
+    def test_repeated_key(self):
+        def change(f):
+            cases = f["tries"][1]["cases"]
+            cases[1]["key"] = cases[0]["key"]
+        self.rejects(change, "repeats a key")
+
+    def test_empty_proof(self):
+        self.rejects(lambda f: self.first(f, True).update(proof=[]), "bad proof index list")
+
+    def test_proof_index_out_of_range(self):
+        self.rejects(lambda f: self.first(f, True)["proof"].append(len(f["tries"][1]["nodes"])), "bad proof index list")
+
+    def test_negative_proof_index(self):
+        self.rejects(lambda f: self.first(f, True)["proof"].__setitem__(0, -1), "bad proof index list")
+
+    def test_proof_index_that_is_a_bool(self):
+        self.rejects(lambda f: self.first(f, True)["proof"].__setitem__(0, False), "bad proof index list")
+
+    def test_empty_value_claimed(self):
+        self.rejects(lambda f: self.first(f, True).update(value="0x"), "claims an empty value")
+
+    def test_present_value_changed(self):
+        self.rejects(lambda f: self.first(f, True).update(value="0x" + "ab" * 3), "walks to a value the fixture does not claim")
+
+    def test_present_key_claimed_absent(self):
+        self.rejects(lambda f: self.first(f, True).update(value=None), "walks to a value the fixture does not claim")
+
+    def test_absent_key_claimed_present(self):
+        self.rejects(lambda f: self.first(f, False).update(value="0x01"), "walks to a value the fixture does not claim")
+
+    def test_proof_node_from_another_trie(self):
+        def change(f):
+            f["tries"][1]["nodes"][0] = f["tries"][2]["nodes"][0]
+        self.rejects(change, "hashes to a value the parent does not reference")
+
+    def test_generation_requires_every_feature(self):
+        saved = synth_trie.FEATURES
+        synth_trie.FEATURES = saved + ("absent_after_the_key",)
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                synth_trie.generate_set()
+        finally:
+            synth_trie.FEATURES = saved
+        self.assertIn("has no absent_after_the_key", str(caught.exception))
+
+    def test_generation_refuses_unlisted_features(self):
+        saved = synth_trie.FEATURES
+        synth_trie.FEATURES = tuple(f for f in saved if f != "embedded_extension")
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                synth_trie.generate_set()
+        finally:
+            synth_trie.FEATURES = saved
+        self.assertIn("unlisted features embedded_extension", str(caught.exception))
+
+
 class Generator(unittest.TestCase):
     def generate_from(self, mutate):
         with tempfile.TemporaryDirectory() as scratch:
@@ -478,7 +789,24 @@ class Generator(unittest.TestCase):
         def change(f):
             proof = next(p for p in f["proofs"] if p["field"].endswith("effective_balance"))
             proof["leaf"] = proof["leaf"][2:]
-        self.refuses(self.edit("validator_beacon", change), "validator_beacon.json")
+        self.refuses(self.edit("validator_beacon", change), "validator_beacon.json: CheckError")
+        self.refuses(self.edit("validator_beacon", change), "is not 0x-prefixed hex")
+
+    def test_fixture_name_must_be_a_lowercase_module_name(self):
+        def mutate(directory):
+            fixture = json.loads((directory / "mainnet_account_eoa.json").read_text())
+            fixture["name"] = "Eoa"
+            (directory / "Eoa.json").write_text(json.dumps(fixture))
+        self.refuses(mutate, "Eoa is not a lowercase Fe module name")
+
+    def test_renderer_and_oracle_must_agree_on_proven_fields(self):
+        saved = dict(gen_fixtures.STATE_PROOFS)
+        del gen_fixtures.STATE_PROOFS["latest_execution_payload_header.block_hash"]
+        try:
+            self.refuses(lambda d: None, "differ from")
+        finally:
+            gen_fixtures.STATE_PROOFS.clear()
+            gen_fixtures.STATE_PROOFS.update(saved)
 
     def test_unknown_kind_is_refused(self):
         self.refuses(self.edit("mainnet_account_eoa", lambda f: f.update(kind="receipt")), "unknown fixture kind")
@@ -489,8 +817,8 @@ class Generator(unittest.TestCase):
     def test_constants_come_from_parsed_values(self):
         files = self.generate_from(lambda d: None)
         text = files[gen_fixtures.OUT_DIR / "validator_beacon.fe"]
-        self.assertIn("pub const EFFECTIVE_BALANCE: u64 = 32000000000\n", text)
-        self.assertIn("pub const BLOCK_ROOT: u256 = 0x", text)
+        self.assertIn("pub(ingot) const EFFECTIVE_BALANCE: u64 = 32000000000\n", text)
+        self.assertIn("pub(ingot) const BLOCK_ROOT: u256 = 0x", text)
 
 
 if __name__ == "__main__":

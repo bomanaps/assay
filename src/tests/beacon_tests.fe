@@ -60,7 +60,7 @@ fn storage_is_proven_from_the_beacon_block_root_alone() {
         usdc::SLOT_BYTES,
         usdc::SLOT_OFFSETS,
         first: 0,
-        count: usdc::SLOT_NODE_COUNTS[0],
+        count: usdc::SLOT_NODE_STARTS[1] - usdc::SLOT_NODE_STARTS[0],
     )
     match verify_storage(
         storage_root: usdc_account.storage_root,
@@ -83,7 +83,7 @@ fn storage_is_proven_from_the_beacon_block_root_alone() {
             weth::SLOT_BYTES,
             weth::SLOT_OFFSETS,
             first: weth::SLOT_NODE_STARTS[slot],
-            count: weth::SLOT_NODE_COUNTS[slot],
+            count: weth::SLOT_NODE_STARTS[slot + 1] - weth::SLOT_NODE_STARTS[slot],
         )
         match verify_storage(
             storage_root: weth_account.storage_root,

@@ -1,0 +1,905 @@
+use ingot::fixture_support::load
+use ingot::fixtures::{
+    chain_account_absent as absent,
+    chain_beacon as c,
+    chain_storage_usdc as usdc,
+    chain_storage_weth as weth,
+    validator_beacon as v,
+    validator_slashed as s,
+}
+use ingot::{
+    proof_error_code,
+    BeaconBlockHeader,
+    BeaconProver,
+    Header,
+    HeaderMismatch,
+    InvalidProof,
+    NodeList,
+    ProofError,
+    ProofNodes,
+    ProverMsg,
+    RootUnavailable,
+    UnsupportedSlot,
+    ValidatorRecord,
+    FULU_FIRST_SLOT,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes, Bytes32, DynArray}
+use std::evm::{Address, CallOutcome, Evm, RawOps, is_error}
+
+const ANSWER: u256 = 0
+const REVERT: u256 = 1
+const SHORT: u256 = 2
+const LONG: u256 = 3
+const EMPTY: u256 = 4
+const GAS: u256 = 30000000
+const OPEN_END: u64 = 0xffffffffffffffff
+const HASH_MISMATCH_CODE: u256 = 2
+const DEPTH_OUT_OF_RANGE_CODE: u256 = 7
+const ROOT_MISMATCH_CODE: u256 = 8
+const INDEX_OUT_OF_RANGE_CODE: u256 = 10
+const WRONG_LENGTH_CODE: u256 = 11
+const PATH_EXHAUSTED_CODE: u256 = 3
+const TRAILING_NODES_CODE: u256 = 4
+
+contract MockBeaconRoots uses (ops: RawOps) {
+    mut mode: u256,
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(behaviour: u256, key: u256, value: u256)
+    uses (mut mode, mut timestamp, mut root)
+    {
+        mode = behaviour
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops, mode, timestamp, root) {
+            if ops.calldatasize() != 32
+                || ops.calldataload(0) == 0
+                || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            let len: usize = if mode == SHORT {
+                31
+            } else if mode == LONG {
+                64
+            } else if mode == EMPTY { 0 } else { 32 }
+            var out = MemBuffer::new(64)
+            out.write_word(offset: 0, value: root)
+            if mode == REVERT {
+                ops.revert(data: out.slice(offset: 0, len))
+            }
+            ops.return_data(data: out.slice(offset: 0, len))
+        }
+    }
+}
+
+fn header() -> Header {
+    Header {
+        slot: c::SLOT,
+        proposer_index: c::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: c::PARENT_ROOT },
+        state_root: Bytes32 { val: c::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: c::BODY_ROOT },
+    }
+}
+
+fn root_of(_ h: Header) -> u256 {
+    BeaconBlockHeader {
+        slot: h.slot,
+        proposer_index: h.proposer_index,
+        parent_root: h.parent_root.val,
+        state_root: h.state_root.val,
+        body_root: h.body_root.val,
+    }
+        .root()
+        .value()
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn abi_nodes(_ list: NodeList) -> DynArray<Bytes> {
+    var out: MemVec<Bytes> = MemVec::new()
+    var i: usize = 0
+    while i < list.count() {
+        out.push(Bytes::from_payload(source: list.node(i)))
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn address_of(_ bytes: [u8; 20]) -> Address {
+    var word: u256 = 0
+    var i: usize = 0
+    while i < 20 {
+        word = (word << 8) | bytes[i] as u256
+        i += 1
+    }
+    Address::new(word)
+}
+
+fn deploy(mode: u256, key: u64, root: u256, end_slot: u64) -> Address
+uses (evm: mut Evm)
+{
+    let roots = evm
+        .create2<MockBeaconRoots>(
+            value: Wei::zero(),
+            args: (mode, key as u256, root),
+            salt: 0,
+        )
+    evm.create2<BeaconProver>(value: Wei::zero(), args: (roots, end_slot), salt: 0)
+}
+
+fn chain_prover() -> Address uses (evm: mut Evm) {
+    deploy(
+        mode: ANSWER,
+        key: c::CHILD_TIMESTAMP,
+        root: c::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+}
+
+fn storage_call<const N: usize, const M: usize>(
+    prover: Address,
+    timestamp: u64,
+    _ h: Header,
+    state_root: u256,
+    account: Address,
+    _ account_bytes: [u8; N],
+    _ account_offsets: [usize; M],
+    account_count: usize,
+    storage: NodeList,
+    slot: u256,
+) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProveStorage {
+            timestamp,
+            header: h,
+            state_root: Bytes32 { val: state_root },
+            state_root_branch: words(c::PAYLOAD_STATE_ROOT_BRANCH),
+            account,
+            account_nodes: abi_nodes(
+                NodeList::from_fixture(
+                    account_bytes,
+                    account_offsets,
+                    first: 0,
+                    count: account_count,
+                ),
+            ),
+            slot,
+            storage_nodes: abi_nodes(storage),
+        },
+    )
+}
+
+fn usdc_call(
+    prover: Address,
+    timestamp: u64,
+    _ h: Header,
+    state_root: u256,
+    account: Address,
+) -> CallOutcome
+uses (evm: mut Evm)
+{
+    storage_call(
+        prover,
+        timestamp,
+        h,
+        state_root,
+        account,
+        usdc::ACCOUNT_BYTES,
+        usdc::ACCOUNT_OFFSETS,
+        account_count: usdc::ACCOUNT_NODE_COUNT,
+        storage: NodeList::from_fixture(
+            usdc::SLOT_BYTES,
+            usdc::SLOT_OFFSETS,
+            first: 0,
+            count: usdc::SLOT_NODE_STARTS[1] - usdc::SLOT_NODE_STARTS[0],
+        ),
+        slot: usdc::SLOT_KEYS[0],
+    )
+}
+
+fn weth_call(prover: Address, slot: usize, key: u256) -> CallOutcome
+uses (evm: mut Evm)
+{
+    storage_call(
+        prover,
+        timestamp: c::CHILD_TIMESTAMP,
+        header(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        account: address_of(weth::ADDRESS_BYTES),
+        weth::ACCOUNT_BYTES,
+        weth::ACCOUNT_OFFSETS,
+        account_count: weth::ACCOUNT_NODE_COUNT,
+        storage: NodeList::from_fixture(
+            weth::SLOT_BYTES,
+            weth::SLOT_OFFSETS,
+            first: weth::SLOT_NODE_STARTS[slot],
+            count: weth::SLOT_NODE_STARTS[slot + 1] - weth::SLOT_NODE_STARTS[slot],
+        ),
+        slot: key,
+    )
+}
+
+fn returned(_ outcome: CallOutcome) -> (u256, u64) {
+    core::assert(outcome.success())
+    let data = outcome.returndata()
+    core::assert(data.len() == 64)
+    (data.read_word(0), data.read_word(32).downcast_truncate())
+}
+
+fn proof_failure(_ outcome: CallOutcome) -> u256 {
+    core::assert(!outcome.success())
+    core::assert(is_error<InvalidProof>(outcome.returndata()))
+    outcome.returndata().read_word(4)
+}
+
+fn root_unavailable(_ outcome: CallOutcome, timestamp: u64) -> bool {
+    !outcome.success()
+        && is_error<RootUnavailable>(outcome.returndata())
+        && outcome.returndata().read_word(4) == timestamp as u256
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn storage_slots_are_proven_through_the_contract_from_the_4788_root()
+uses (evm: mut Evm)
+{
+    let prover = chain_prover()
+    let (value, slot) = returned(
+        usdc_call(
+            prover,
+            timestamp: c::CHILD_TIMESTAMP,
+            header(),
+            state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+            account: address_of(usdc::ADDRESS_BYTES),
+        ),
+    )
+    core::assert(value == usdc::SLOT_VALUES[0])
+    core::assert(slot == c::SLOT)
+    var i: usize = 0
+    while i < 3 {
+        let (weth_value, weth_slot) = returned(weth_call(prover, slot: i, key: weth::SLOT_KEYS[i]))
+        core::assert(weth_value == weth::SLOT_VALUES[i])
+        core::assert(weth_slot == c::SLOT)
+        i += 1
+    }
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_storage_proof_answers_only_for_its_own_slot_and_account()
+uses (evm: mut Evm)
+{
+    let prover = chain_prover()
+    core::assert(
+        proof_failure(weth_call(prover, slot: 1, key: weth::SLOT_KEYS[0])) == HASH_MISMATCH_CODE,
+    )
+    let usdc_address = address_of(usdc::ADDRESS_BYTES)
+    let wrong = Address::new(usdc_address.word() ^ 1)
+    core::assert(
+        proof_failure(
+                usdc_call(
+                    prover,
+                    timestamp: c::CHILD_TIMESTAMP,
+                    header(),
+                    state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                    account: wrong,
+                ),
+            )
+            == HASH_MISMATCH_CODE,
+    )
+    core::assert(
+        proof_failure(
+                usdc_call(
+                    prover,
+                    timestamp: c::CHILD_TIMESTAMP,
+                    header(),
+                    state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                    account: address_of(weth::ADDRESS_BYTES),
+                ),
+            )
+            == HASH_MISMATCH_CODE,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_state_root_off_the_beacon_branch_is_rejected() uses (evm: mut Evm) {
+    let prover = chain_prover()
+    let code = proof_failure(
+        usdc_call(
+            prover,
+            timestamp: c::CHILD_TIMESTAMP,
+            header(),
+            state_root: c::PAYLOAD_STATE_ROOT_LEAF ^ 1,
+            account: address_of(usdc::ADDRESS_BYTES),
+        ),
+    )
+    core::assert(code == ROOT_MISMATCH_CODE)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn every_header_field_is_bound_to_the_4788_root() uses (evm: mut Evm) {
+    let prover = chain_prover()
+    var field: usize = 0
+    while field < 5 {
+        var h = header()
+        if field == 0 {
+            h.slot += 1
+        } else if field == 1 {
+            h.proposer_index += 1
+        } else if field == 2 {
+            h.parent_root = Bytes32 { val: h.parent_root.val ^ 1 }
+        } else if field == 3 {
+            h.state_root = Bytes32 { val: h.state_root.val ^ 1 }
+        } else {
+            h.body_root = Bytes32 { val: h.body_root.val ^ 1 }
+        }
+        let outcome = usdc_call(
+            prover,
+            timestamp: c::CHILD_TIMESTAMP,
+            h,
+            state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+            account: address_of(usdc::ADDRESS_BYTES),
+        )
+        core::assert(!outcome.success())
+        core::assert(is_error<HeaderMismatch>(outcome.returndata()))
+        core::assert(outcome.returndata().read_word(4) == c::BLOCK_ROOT)
+        field += 1
+    }
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_root_is_trusted_only_from_an_exact_32_byte_answer() uses (evm: mut Evm) {
+    let account = address_of(usdc::ADDRESS_BYTES)
+    let prover = chain_prover()
+    core::assert(
+        root_unavailable(
+            usdc_call(
+                prover,
+                timestamp: c::CHILD_TIMESTAMP + 12,
+                header(),
+                state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                account,
+            ),
+            timestamp: c::CHILD_TIMESTAMP + 12,
+        ),
+    )
+    var mode: u256 = REVERT
+    while mode <= EMPTY {
+        let misbehaving = deploy(
+            mode,
+            key: c::CHILD_TIMESTAMP,
+            root: c::BLOCK_ROOT,
+            end_slot: OPEN_END,
+        )
+        core::assert(
+            root_unavailable(
+                usdc_call(
+                    prover: misbehaving,
+                    timestamp: c::CHILD_TIMESTAMP,
+                    header(),
+                    state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                    account,
+                ),
+                timestamp: c::CHILD_TIMESTAMP,
+            ),
+        )
+        mode += 1
+    }
+}
+
+fn at_slot(_ slot: u64) -> Header {
+    var h = header()
+    h.slot = slot
+    h
+}
+
+fn fork_outcome(slot: u64, end_slot: u64) -> CallOutcome uses (evm: mut Evm) {
+    let h = at_slot(slot)
+    let prover = deploy(
+        mode: ANSWER,
+        key: c::CHILD_TIMESTAMP,
+        root: root_of(h),
+        end_slot,
+    )
+    usdc_call(
+        prover,
+        timestamp: c::CHILD_TIMESTAMP,
+        h,
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        account: address_of(usdc::ADDRESS_BYTES),
+    )
+}
+
+fn unsupported(_ outcome: CallOutcome, slot: u64) -> bool {
+    !outcome.success()
+        && is_error<UnsupportedSlot>(outcome.returndata())
+        && outcome.returndata().read_word(4) == slot as u256
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn only_headers_from_the_first_fulu_slot_up_to_the_end_slot_are_accepted()
+uses (evm: mut Evm)
+{
+    let end_slot = c::SLOT + 100
+    core::assert(
+        unsupported(
+            fork_outcome(slot: FULU_FIRST_SLOT - 1, end_slot),
+            slot: FULU_FIRST_SLOT - 1,
+        ),
+    )
+    core::assert(
+        proof_failure(fork_outcome(slot: FULU_FIRST_SLOT, end_slot)) == ROOT_MISMATCH_CODE,
+    )
+    core::assert(
+        proof_failure(fork_outcome(slot: end_slot - 1, end_slot)) == ROOT_MISMATCH_CODE,
+    )
+    core::assert(
+        unsupported(fork_outcome(slot: end_slot, end_slot), slot: end_slot),
+    )
+    let prover = deploy(
+        mode: ANSWER,
+        key: c::CHILD_TIMESTAMP,
+        root: c::BLOCK_ROOT,
+        end_slot: c::SLOT,
+    )
+    core::assert(
+        unsupported(
+            usdc_call(
+                prover,
+                timestamp: c::CHILD_TIMESTAMP,
+                header(),
+                state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                account: address_of(usdc::ADDRESS_BYTES),
+            ),
+            slot: c::SLOT,
+        ),
+    )
+}
+
+#[cfg(target = "evm")]
+#[test(should_revert, selector = 0x022877e7)]
+fn a_beacon_roots_address_without_code_cannot_be_deployed()
+uses (evm: mut Evm)
+{
+    let _ = evm
+        .create2<BeaconProver>(
+            value: Wei::zero(),
+            args: (Address::new(0xbeac02), OPEN_END),
+            salt: 0,
+        )
+}
+
+#[cfg(target = "evm")]
+#[test(should_revert, selector = 0x5181fcb8)]
+fn an_end_slot_at_or_before_the_fork_cannot_be_deployed() uses (evm: mut Evm) {
+    let _ = deploy(
+        mode: ANSWER,
+        key: c::CHILD_TIMESTAMP,
+        root: c::BLOCK_ROOT,
+        end_slot: FULU_FIRST_SLOT,
+    )
+}
+
+#[test]
+fn proof_error_codes_are_a_fixed_public_table() {
+    core::assert(proof_error_code(ProofError::BadRlp) == 1)
+    core::assert(proof_error_code(ProofError::HashMismatch(0)) == 2)
+    core::assert(proof_error_code(ProofError::HashMismatch(7)) == 2)
+    core::assert(proof_error_code(ProofError::PathExhausted) == 3)
+    core::assert(proof_error_code(ProofError::TrailingNodes) == 4)
+    core::assert(proof_error_code(ProofError::BadHexPrefix) == 5)
+    core::assert(proof_error_code(ProofError::BranchValueOnPath) == 6)
+    core::assert(proof_error_code(ProofError::DepthOutOfRange) == 7)
+    core::assert(proof_error_code(ProofError::RootMismatch) == 8)
+    core::assert(proof_error_code(ProofError::KeyNotConsumed) == 9)
+    core::assert(proof_error_code(ProofError::IndexOutOfRange) == 10)
+    core::assert(proof_error_code(ProofError::WrongLength) == 11)
+}
+
+fn validator_header() -> Header {
+    Header {
+        slot: v::SLOT,
+        proposer_index: v::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: v::PARENT_ROOT },
+        state_root: Bytes32 { val: v::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: v::BODY_ROOT },
+    }
+}
+
+fn fixture_record() -> ValidatorRecord {
+    ValidatorRecord {
+        pubkey: Bytes::from_payload(source: load(v::PUBKEY).span()),
+        withdrawal_credentials: Bytes32 { val: v::WITHDRAWAL_CREDENTIALS },
+        effective_balance: v::EFFECTIVE_BALANCE,
+        slashed: v::SLASHED,
+        activation_eligibility_epoch: v::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: v::ACTIVATION_EPOCH,
+        exit_epoch: v::EXIT_EPOCH,
+        withdrawable_epoch: v::WITHDRAWABLE_EPOCH,
+    }
+}
+
+fn slashed_record() -> ValidatorRecord {
+    ValidatorRecord {
+        pubkey: Bytes::from_payload(source: load(s::PUBKEY).span()),
+        withdrawal_credentials: Bytes32 { val: s::WITHDRAWAL_CREDENTIALS },
+        effective_balance: s::EFFECTIVE_BALANCE,
+        slashed: s::SLASHED,
+        activation_eligibility_epoch: s::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: s::ACTIVATION_EPOCH,
+        exit_epoch: s::EXIT_EPOCH,
+        withdrawable_epoch: s::WITHDRAWABLE_EPOCH,
+    }
+}
+
+fn validator_call(prover: Address, index: u64, record: own ValidatorRecord) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProveValidator {
+            timestamp: v::CHILD_TIMESTAMP,
+            header: validator_header(),
+            index,
+            validator: record,
+            branch: words(v::VALIDATOR_BRANCH),
+        },
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_validator_record_is_proven_through_the_contract_with_its_slot()
+uses (evm: mut Evm)
+{
+    let prover = deploy(
+        mode: ANSWER,
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    let outcome = validator_call(
+        prover,
+        index: v::VALIDATOR_INDEX,
+        record: fixture_record(),
+    )
+    core::assert(outcome.success())
+    core::assert(outcome.returndata().len() == 32)
+    core::assert(outcome.returndata().read_word(0) == v::SLOT as u256)
+    var changed = fixture_record()
+    changed.effective_balance = v::EFFECTIVE_BALANCE + 1000000000
+    core::assert(
+        proof_failure(
+                validator_call(prover, index: v::VALIDATOR_INDEX, record: changed),
+            )
+            == ROOT_MISMATCH_CODE,
+    )
+    core::assert(
+        proof_failure(
+                validator_call(prover, index: 1 << 40, record: fixture_record()),
+            )
+            == INDEX_OUT_OF_RANGE_CODE,
+    )
+    var short = fixture_record()
+    short.pubkey = Bytes::from_payload(source: load(v::PUBKEY).span().slice(offset: 0, len: 47))
+    core::assert(
+        proof_failure(
+                validator_call(prover, index: v::VALIDATOR_INDEX, record: short),
+            )
+            == WRONG_LENGTH_CODE,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_slashed_validator_record_is_proven_through_the_contract()
+uses (evm: mut Evm)
+{
+    let prover = deploy(
+        mode: ANSWER,
+        key: s::CHILD_TIMESTAMP,
+        root: s::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    let outcome = evm
+        .try_call(
+            addr: prover,
+            gas: GAS,
+            value: Wei::zero(),
+            message: ProverMsg::ProveValidator {
+                timestamp: s::CHILD_TIMESTAMP,
+                header: validator_header(),
+                index: s::VALIDATOR_INDEX,
+                validator: slashed_record(),
+                branch: words(s::VALIDATOR_BRANCH),
+            },
+        )
+    core::assert(outcome.success())
+    core::assert(outcome.returndata().read_word(0) == s::SLOT as u256)
+}
+
+fn usdc_slot(_ index: usize, drop_last: bool) -> NodeList {
+    var nodes = NodeList::from_fixture(
+        usdc::SLOT_BYTES,
+        usdc::SLOT_OFFSETS,
+        first: usdc::SLOT_NODE_STARTS[index],
+        count: usdc::SLOT_NODE_STARTS[index + 1] - usdc::SLOT_NODE_STARTS[index],
+    )
+    if drop_last {
+        nodes.drop_last()
+    }
+    nodes
+}
+
+fn usdc_slot_call(prover: Address, index: usize, drop_last: bool) -> CallOutcome
+uses (evm: mut Evm)
+{
+    storage_call(
+        prover,
+        timestamp: c::CHILD_TIMESTAMP,
+        header(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        account: address_of(usdc::ADDRESS_BYTES),
+        usdc::ACCOUNT_BYTES,
+        usdc::ACCOUNT_OFFSETS,
+        account_count: usdc::ACCOUNT_NODE_COUNT,
+        storage: usdc_slot(index, drop_last),
+        slot: usdc::SLOT_KEYS[index],
+    )
+}
+
+fn absent_account_call(prover: Address, account_count: usize, storage: NodeList) -> CallOutcome
+uses (evm: mut Evm)
+{
+    storage_call(
+        prover,
+        timestamp: c::CHILD_TIMESTAMP,
+        header(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        account: address_of(absent::ADDRESS_BYTES),
+        absent::ACCOUNT_BYTES,
+        absent::ACCOUNT_OFFSETS,
+        account_count,
+        storage,
+        slot: 0,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn an_unset_slot_is_proven_zero_and_a_truncated_proof_is_never_read_as_zero()
+uses (evm: mut Evm)
+{
+    let prover = chain_prover()
+    core::assert(!usdc::SLOT_PRESENT[1])
+    let (value, slot) = returned(usdc_slot_call(prover, index: 1, drop_last: false))
+    core::assert(value == 0)
+    core::assert(slot == c::SLOT)
+    core::assert(
+        proof_failure(usdc_slot_call(prover, index: 1, drop_last: true)) == PATH_EXHAUSTED_CODE,
+    )
+    core::assert(
+        proof_failure(usdc_slot_call(prover, index: 0, drop_last: true)) == PATH_EXHAUSTED_CODE,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn an_absent_account_holds_zero_only_with_no_storage_nodes()
+uses (evm: mut Evm)
+{
+    let prover = chain_prover()
+    let (value, slot) = returned(
+        absent_account_call(
+            prover,
+            account_count: absent::ACCOUNT_NODE_COUNT,
+            storage: NodeList::new(),
+        ),
+    )
+    core::assert(value == 0)
+    core::assert(slot == c::SLOT)
+    core::assert(
+        proof_failure(
+                absent_account_call(
+                    prover,
+                    account_count: absent::ACCOUNT_NODE_COUNT,
+                    storage: usdc_slot(0, drop_last: false),
+                ),
+            )
+            == TRAILING_NODES_CODE,
+    )
+    core::assert(
+        proof_failure(
+                absent_account_call(
+                    prover,
+                    account_count: absent::ACCOUNT_NODE_COUNT - 1,
+                    storage: NodeList::new(),
+                ),
+            )
+            == PATH_EXHAUSTED_CODE,
+    )
+}
+
+fn short_branch<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i + 1 < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_timestamp_is_passed_on_with_all_sixty_four_bits() uses (evm: mut Evm) {
+    let late: u64 = 0xffffffffffffffff
+    let prover = deploy(
+        mode: ANSWER,
+        key: late,
+        root: c::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    let (value, slot) = returned(
+        usdc_call(
+            prover,
+            timestamp: late,
+            header(),
+            state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+            account: address_of(usdc::ADDRESS_BYTES),
+        ),
+    )
+    core::assert(value == usdc::SLOT_VALUES[0])
+    core::assert(slot == c::SLOT)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn timestamp_zero_never_yields_a_root() uses (evm: mut Evm) {
+    let prover = deploy(
+        mode: ANSWER,
+        key: 0,
+        root: c::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    core::assert(
+        root_unavailable(
+            usdc_call(
+                prover,
+                timestamp: 0,
+                header(),
+                state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+                account: address_of(usdc::ADDRESS_BYTES),
+            ),
+            timestamp: 0,
+        ),
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_header_is_bound_to_the_root_before_its_slot_is_judged()
+uses (evm: mut Evm)
+{
+    let prover = chain_prover()
+    let outcome = usdc_call(
+        prover,
+        timestamp: c::CHILD_TIMESTAMP,
+        at_slot(FULU_FIRST_SLOT - 1),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        account: address_of(usdc::ADDRESS_BYTES),
+    )
+    core::assert(!outcome.success())
+    core::assert(is_error<HeaderMismatch>(outcome.returndata()))
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_branch_one_level_short_is_rejected_by_both_messages() uses (evm: mut Evm) {
+    let prover = chain_prover()
+    let storage = evm
+        .try_call(
+            addr: prover,
+            gas: GAS,
+            value: Wei::zero(),
+            message: ProverMsg::ProveStorage {
+                timestamp: c::CHILD_TIMESTAMP,
+                header: header(),
+                state_root: Bytes32 { val: c::PAYLOAD_STATE_ROOT_LEAF },
+                state_root_branch: short_branch(c::PAYLOAD_STATE_ROOT_BRANCH),
+                account: address_of(usdc::ADDRESS_BYTES),
+                account_nodes: abi_nodes(
+                    NodeList::from_fixture(
+                        usdc::ACCOUNT_BYTES,
+                        usdc::ACCOUNT_OFFSETS,
+                        first: 0,
+                        count: usdc::ACCOUNT_NODE_COUNT,
+                    ),
+                ),
+                slot: usdc::SLOT_KEYS[0],
+                storage_nodes: abi_nodes(usdc_slot(0, drop_last: false)),
+            },
+        )
+    core::assert(proof_failure(storage) == DEPTH_OUT_OF_RANGE_CODE)
+    let validator_prover = deploy(
+        mode: ANSWER,
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    let record = evm
+        .try_call(
+            addr: validator_prover,
+            gas: GAS,
+            value: Wei::zero(),
+            message: ProverMsg::ProveValidator {
+                timestamp: v::CHILD_TIMESTAMP,
+                header: validator_header(),
+                index: v::VALIDATOR_INDEX,
+                validator: fixture_record(),
+                branch: short_branch(v::VALIDATOR_BRANCH),
+            },
+        )
+    core::assert(proof_failure(record) == DEPTH_OUT_OF_RANGE_CODE)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_validator_proof_passes_the_same_root_and_slot_checks()
+uses (evm: mut Evm)
+{
+    let closed = deploy(
+        mode: ANSWER,
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        end_slot: v::SLOT,
+    )
+    core::assert(
+        unsupported(
+            validator_call(
+                prover: closed,
+                index: v::VALIDATOR_INDEX,
+                record: fixture_record(),
+            ),
+            slot: v::SLOT,
+        ),
+    )
+    let wrong_root = deploy(
+        mode: ANSWER,
+        key: v::CHILD_TIMESTAMP,
+        root: c::BLOCK_ROOT,
+        end_slot: OPEN_END,
+    )
+    let outcome = validator_call(
+        prover: wrong_root,
+        index: v::VALIDATOR_INDEX,
+        record: fixture_record(),
+    )
+    core::assert(!outcome.success())
+    core::assert(is_error<HeaderMismatch>(outcome.returndata()))
+}

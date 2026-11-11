@@ -1,7 +1,7 @@
 """Capture beacon chain proofs as fixtures.
 
 usage: capture_beacon.py chain
-       capture_beacon.py validator <state.ssz> <validator index>
+       capture_beacon.py validator <state.ssz> <validator index> <fixture name>
 
 Both read RPC_URL (execution JSON-RPC) and BEACON_URL (beacon API).
 
@@ -9,11 +9,16 @@ chain picks execution block N two blocks behind the head, reads block N+1, and
 fetches the beacon block named by N+1's parentBeaconBlockRoot, whose execution
 payload is N. It writes fixtures/chain_beacon.json with proofs of the payload's
 state_root, block_number and block_hash against the beacon block root, and
-trie fixtures chain_storage_usdc and chain_storage_weth captured at block N.
+trie fixtures captured at block N: chain_storage_usdc (slot 0, and slot
+0xa55a70ff, which must be unset), chain_storage_weth (slots 0 to 2), and
+chain_account_absent for an address that must hold no account.
 
 validator takes a BeaconState in SSZ whose slot holds a finalized, canonical
-block. It writes fixtures/validator_beacon.json with proofs of the validator's
-pubkey, withdrawal_credentials and effective_balance, and of the state's
+block. It writes fixtures/<fixture name>.json, a name starting with
+validator_, with the validator's eight
+fields and proofs of the whole validator record, of its pubkey,
+withdrawal_credentials and effective_balance, of the state's latest execution
+payload block_hash, and of the state's
 genesis_validators_root and fork.current_version, against that block's root.
 
 Every computed root must equal the root the chain reports, every proof
@@ -37,12 +42,15 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from remerkleable.tree import concat_gindices
 
 import capture_getproof
+import oracle_mpt
 import oracle_ssz
 import ssz_types as t
 
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
-DECIMAL_PATTERN = re.compile(r"^[0-9]+$")
+ABSENT = "0x00000000000000000000000000000000a55a70ff"
+DECIMAL_PATTERN = re.compile(r"[0-9]+")
+VALIDATOR_NAME_PATTERN = re.compile(r"validator_[a-z0-9_]+")
 
 
 def fail(message):
@@ -135,6 +143,9 @@ def check_network():
 
 
 def stage_and_commit(fixtures, rows):
+    for fixture in fixtures:
+        if not capture_getproof.NAME_PATTERN.fullmatch(fixture["name"]):
+            fail(f"refusing to write a fixture named {fixture['name']!r}")
     with tempfile.TemporaryDirectory() as scratch:
         scratch_dir = pathlib.Path(scratch)
         for fixture in fixtures:
@@ -190,11 +201,19 @@ def chain():
         body_root=block.body.hash_tree_root(),
     )
     storage = [
-        capture_getproof.build_fixture(url, "chain_storage_usdc", USDC, header, [capture_getproof.slot_word("0")]),
+        capture_getproof.build_fixture(
+            url, "chain_storage_usdc", USDC, header, [capture_getproof.slot_word(s) for s in ("0", ABSENT)]
+        ),
         capture_getproof.build_fixture(
             url, "chain_storage_weth", WETH, header, [capture_getproof.slot_word(s) for s in ("0", "1", "2")]
         ),
+        capture_getproof.build_fixture(url, "chain_account_absent", ABSENT, header, []),
     ]
+    usdc = oracle_mpt.analyze(storage[0])
+    if not usdc["slots"][0]["present"] or usdc["slots"][1]["present"]:
+        fail("USDC slot 0 must be set and slot 0xa55a70ff unset at block N")
+    if oracle_mpt.analyze(storage[2])["present"]:
+        fail(f"{ABSENT} holds an account at block N")
     if any(f["chainId"] != chain_id_beacon for f in storage):
         fail("execution chain id differs from the beacon deposit chain id")
     beacon = {
@@ -215,9 +234,11 @@ def chain():
     stage_and_commit(storage + [beacon], rows)
 
 
-def validator(state_path, index_text):
-    if not DECIMAL_PATTERN.match(index_text):
+def validator(state_path, index_text, fixture_name):
+    if not DECIMAL_PATTERN.fullmatch(index_text):
         fail(f"validator index must be a decimal number: {index_text}")
+    if not VALIDATOR_NAME_PATTERN.fullmatch(fixture_name):
+        fail(f"fixture name must look like validator_<word>: {fixture_name}")
     index = int(index_text)
     chain_id = check_network()
     url = env("RPC_URL")
@@ -256,19 +277,25 @@ def validator(state_path, index_text):
         fail("header branch does not end at the state root")
     record = state.validators[index]
     prefix = f"validators[{index}]."
-    in_state = {prefix + f: oracle_ssz.validator_state_gindex(index, f) for f in ("pubkey", "withdrawal_credentials", "effective_balance")}
+    in_state = {f"validators[{index}]": oracle_ssz.validator_element_gindex(index)}
+    in_state.update({prefix + f: oracle_ssz.validator_state_gindex(index, f) for f in ("pubkey", "withdrawal_credentials", "effective_balance")})
     in_state["genesis_validators_root"] = oracle_ssz.state_gindex("genesis_validators_root")
     in_state["fork.current_version"] = oracle_ssz.state_gindex("fork.current_version")
-    type_keys = {prefix + f: ["validators", index, f] for f in ("pubkey", "withdrawal_credentials", "effective_balance")}
+    in_state["latest_execution_payload_header.block_hash"] = oracle_ssz.state_gindex(
+        "latest_execution_payload_header.block_hash"
+    )
+    type_keys = {f"validators[{index}]": ["validators", index]}
+    type_keys.update({prefix + f: ["validators", index, f] for f in ("pubkey", "withdrawal_credentials", "effective_balance")})
     type_keys["genesis_validators_root"] = ["genesis_validators_root"]
     type_keys["fork.current_version"] = ["fork", "current_version"]
+    type_keys["latest_execution_payload_header.block_hash"] = ["latest_execution_payload_header", "block_hash"]
     check_positions(t.BeaconState, type_keys, in_state)
     proofs = []
     for name, gindex in in_state.items():
         leaf, siblings = branch(state.get_backing(), gindex)
         proofs.append(proof_json(name, oracle_ssz.from_block_root(gindex), leaf, siblings + header_siblings))
     fixture = {
-        "name": "validator_beacon",
+        "name": fixture_name,
         "kind": "beacon_validator",
         "consensusVersion": oracle_ssz.CONSENSUS_VERSION,
         "beacon": {"blockRoot": beacon_root, "header": header_json(beacon_header)},
@@ -279,12 +306,14 @@ def validator(state_path, index_text):
             "pubkey": "0x" + bytes(record.pubkey).hex(),
             "withdrawal_credentials": hex32(record.withdrawal_credentials),
             "effective_balance": str(int(record.effective_balance)),
+            "slashed": bool(record.slashed),
+            **{name: str(int(getattr(record, name))) for name in oracle_ssz.VALIDATOR_EPOCHS},
         },
         "proofs": proofs,
     }
     row = capture_getproof.readme_row(
-        "validator_beacon", "beacon_validator", chain_id, f"slot {slot}", beacon_root, state_root,
-        f"capture_beacon.py validator <finalized state at slot {slot}> {index}",
+        fixture_name, "beacon_validator", chain_id, f"slot {slot}", beacon_root, state_root,
+        f"capture_beacon.py validator <finalized state at slot {slot}> {index} {fixture_name}",
     )
     stage_and_commit([fixture], [row])
 
@@ -292,8 +321,8 @@ def validator(state_path, index_text):
 def main(argv):
     if len(argv) == 2 and argv[1] == "chain":
         chain()
-    elif len(argv) == 4 and argv[1] == "validator":
-        validator(argv[2], argv[3])
+    elif len(argv) == 5 and argv[1] == "validator":
+        validator(argv[2], argv[3], argv[4])
     else:
         fail(__doc__)
 

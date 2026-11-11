@@ -3,11 +3,26 @@ pub use beacon::{
     verify_execution_state_root,
     verify_payload_field,
     verify_state_field,
+    verify_validator,
     verify_validator_field,
     BeaconBlockHeader,
     PayloadField,
     StateField,
+    Validator,
     ValidatorField,
+}
+pub use consumer::{
+    proof_error_code,
+    BeaconProver,
+    BeaconRootsWithoutCode,
+    Header,
+    HeaderMismatch,
+    InvalidProof,
+    ProverMsg,
+    RootUnavailable,
+    UnsupportedSlot,
+    ValidatorRecord,
+    FULU_FIRST_SLOT,
 }
 pub use mpt::{verify_trie, Leaf, NodeList, ProofNodes}
 pub use ssz::{bytes48_leaf, hash_pair, verify_branch, Branch}

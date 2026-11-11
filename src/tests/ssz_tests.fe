@@ -1,13 +1,15 @@
-use ingot::fixtures::{chain_beacon as c, validator_beacon as v}
+use ingot::fixtures::{chain_beacon as c, validator_beacon as v, validator_slashed as slashed}
 use ingot::fixture_support::load
-use ingot::ssz::{concat, field}
+use ingot::ssz::{concat, field, software_hash_pair}
 use ingot::beacon::validator_gindex
 use ingot::{
     bytes48_leaf,
+    hash_pair,
     verify_branch,
     verify_execution_state_root,
     verify_payload_field,
     verify_state_field,
+    verify_validator,
     verify_validator_field,
     BeaconBlockHeader,
     BeaconRoot,
@@ -17,6 +19,7 @@ use ingot::{
     ProofError,
     Root,
     StateField,
+    Validator,
     ValidatorField,
 }
 use core::{MemBuffer, MemVec}
@@ -37,6 +40,16 @@ fn expect_ok(_ result: Result<ProofError, ()>) {
     match result {
         Result::Ok(_) => core::assert(true),
         Result::Err(_) => core::assert(false),
+    }
+}
+
+fn pubkey_root<const N: usize>(_ pubkey: [u8; N]) -> u256 {
+    match bytes48_leaf(load(pubkey).span()) {
+        Result::Ok(root) => root,
+        Result::Err(_) => {
+            core::assert(false)
+            0
+        },
     }
 }
 
@@ -79,13 +92,13 @@ fn header_fields_hash_to_the_block_roots() {
 #[test]
 fn payload_fields_verify_at_their_positions() {
     core::assert(
-        c::PAYLOAD_STATE_ROOT_GINDEX == PayloadField::StateRoot.gindex(),
+        c::PAYLOAD_STATE_ROOT_GINDEX == PayloadField::StateRoot.gindex().value(),
     )
     core::assert(
-        c::PAYLOAD_BLOCK_NUMBER_GINDEX == PayloadField::BlockNumber.gindex(),
+        c::PAYLOAD_BLOCK_NUMBER_GINDEX == PayloadField::BlockNumber.gindex().value(),
     )
     core::assert(
-        c::PAYLOAD_BLOCK_HASH_GINDEX == PayloadField::BlockHash.gindex(),
+        c::PAYLOAD_BLOCK_HASH_GINDEX == PayloadField::BlockHash.gindex().value(),
     )
     match verify_execution_state_root(
         beacon_root: chain_root(),
@@ -121,7 +134,7 @@ fn validator_fields_verify_from_rebuilt_leaves() {
             beacon_root: validator_root(),
             index,
             which: ValidatorField::Pubkey,
-            leaf: bytes48_leaf(load(v::PUBKEY).span()),
+            leaf: pubkey_root(v::PUBKEY),
             branch: Branch::new(v::VALIDATOR_PUBKEY_BRANCH),
         ),
     )
@@ -274,6 +287,110 @@ fn a_zero_position_cannot_be_concatenated() {
     let _ = concat(0, 5)
 }
 
+fn fixture_validator() -> Validator {
+    Validator {
+        pubkey_root: pubkey_root(v::PUBKEY),
+        withdrawal_credentials: v::WITHDRAWAL_CREDENTIALS,
+        effective_balance: v::EFFECTIVE_BALANCE,
+        slashed: v::SLASHED,
+        activation_eligibility_epoch: v::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: v::ACTIVATION_EPOCH,
+        exit_epoch: v::EXIT_EPOCH,
+        withdrawable_epoch: v::WITHDRAWABLE_EPOCH,
+    }
+}
+
+#[test]
+fn the_whole_validator_record_hashes_to_its_proven_leaf_and_verifies() {
+    let record = fixture_validator()
+    core::assert(record.root() == v::VALIDATOR_LEAF)
+    expect_ok(
+        verify_validator(
+            beacon_root: validator_root(),
+            index: v::VALIDATOR_INDEX,
+            validator: record,
+            branch: Branch::new(v::VALIDATOR_BRANCH),
+        ),
+    )
+}
+
+#[test]
+fn a_slashed_and_exited_validator_record_verifies() {
+    let record = Validator {
+        pubkey_root: pubkey_root(slashed::PUBKEY),
+        withdrawal_credentials: slashed::WITHDRAWAL_CREDENTIALS,
+        effective_balance: slashed::EFFECTIVE_BALANCE,
+        slashed: slashed::SLASHED,
+        activation_eligibility_epoch: slashed::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: slashed::ACTIVATION_EPOCH,
+        exit_epoch: slashed::EXIT_EPOCH,
+        withdrawable_epoch: slashed::WITHDRAWABLE_EPOCH,
+    }
+    core::assert(record.slashed)
+    core::assert(record.root() == slashed::VALIDATOR_LEAF)
+    expect_ok(
+        verify_validator(
+            beacon_root: BeaconRoot::new(slashed::BLOCK_ROOT),
+            index: slashed::VALIDATOR_INDEX,
+            validator: record,
+            branch: Branch::new(slashed::VALIDATOR_BRANCH),
+        ),
+    )
+}
+
+#[test]
+fn every_record_field_and_the_index_are_bound_by_the_record_proof() {
+    var field: usize = 0
+    while field < 8 {
+        var record = fixture_validator()
+        if field == 0 {
+            record.pubkey_root ^= 1
+        } else if field == 1 {
+            record.withdrawal_credentials ^= 1
+        } else if field == 2 {
+            record.effective_balance -= 1
+        } else if field == 3 {
+            record.slashed = !record.slashed
+        } else if field == 4 {
+            record.activation_eligibility_epoch += 1
+        } else if field == 5 {
+            record.activation_epoch += 1
+        } else if field == 6 {
+            record.exit_epoch -= 1
+        } else {
+            record.withdrawable_epoch -= 1
+        }
+        expect_error(
+            verify_validator(
+                beacon_root: validator_root(),
+                index: v::VALIDATOR_INDEX,
+                validator: record,
+                branch: Branch::new(v::VALIDATOR_BRANCH),
+            ),
+            ProofError::RootMismatch,
+        )
+        field += 1
+    }
+    expect_error(
+        verify_validator(
+            beacon_root: validator_root(),
+            index: v::VALIDATOR_INDEX + 1,
+            validator: fixture_validator(),
+            branch: Branch::new(v::VALIDATOR_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_validator(
+            beacon_root: validator_root(),
+            index: 1 << 40,
+            validator: fixture_validator(),
+            branch: Branch::new(v::VALIDATOR_BRANCH),
+        ),
+        ProofError::IndexOutOfRange,
+    )
+}
+
 fn pubkey_chunks() -> (u256, u256) {
     var buffer = MemBuffer::new(64)
     buffer.copy_from(dest_offset: 0, load(v::PUBKEY).span())
@@ -357,8 +474,150 @@ fn position_one_is_the_root_itself() {
     )
 }
 
-#[test(should_revert)]
-fn a_pubkey_longer_than_forty_eight_bytes_is_refused() {
-    let long = MemBuffer::new(49)
-    let _ = bytes48_leaf(long.span())
+#[test]
+fn a_pubkey_root_is_the_proven_leaf_and_any_other_length_is_refused() {
+    core::assert(pubkey_root(v::PUBKEY) == v::VALIDATOR_PUBKEY_LEAF)
+    let pubkey = load(v::PUBKEY)
+    var length: usize = 0
+    while length <= 64 {
+        if length != 48 {
+            var bytes = MemBuffer::new(length)
+            bytes
+                .copy_from(
+                    dest_offset: 0,
+                    pubkey.span().slice(offset: 0, len: if length < 48 { length } else { 48 }),
+                )
+            match bytes48_leaf(bytes.span()) {
+                Result::Err(error) => core::assert(error == ProofError::WrongLength),
+                Result::Ok(_) => core::assert(false),
+            }
+        }
+        length += 1
+    }
+}
+
+#[test]
+fn every_sibling_of_a_payload_and_a_validator_branch_is_load_bearing() {
+    var level: usize = 0
+    while level < 12 {
+        var branch = c::PAYLOAD_STATE_ROOT_BRANCH
+        branch[level] ^= 1
+        expect_error(
+            verify_payload_field(
+                beacon_root: chain_root(),
+                which: PayloadField::StateRoot,
+                leaf: c::PAYLOAD_STATE_ROOT_LEAF,
+                branch: Branch::new(branch),
+            ),
+            ProofError::RootMismatch,
+        )
+        level += 1
+    }
+    level = 0
+    while level < 50 {
+        var branch = v::VALIDATOR_BRANCH
+        branch[level] ^= 1
+        expect_error(
+            verify_validator(
+                beacon_root: validator_root(),
+                index: v::VALIDATOR_INDEX,
+                validator: fixture_validator(),
+                branch: Branch::new(branch),
+            ),
+            ProofError::RootMismatch,
+        )
+        level += 1
+    }
+}
+
+#[test]
+fn a_state_field_proof_fails_for_another_leaf_root_or_length() {
+    expect_error(
+        verify_state_field(
+            beacon_root: validator_root(),
+            which: StateField::ForkCurrentVersion,
+            leaf: FULU_FORK_VERSION_LEAF - (1 << 248),
+            branch: Branch::new(v::FORK_VERSION_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_state_field(
+            beacon_root: chain_root(),
+            which: StateField::GenesisValidatorsRoot,
+            leaf: MAINNET_GENESIS_VALIDATORS_ROOT,
+            branch: Branch::new(v::GENESIS_VALIDATORS_ROOT_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    expect_error(
+        verify_state_field(
+            beacon_root: validator_root(),
+            which: StateField::GenesisValidatorsRoot,
+            leaf: MAINNET_GENESIS_VALIDATORS_ROOT,
+            branch: Branch::new(v::FORK_VERSION_BRANCH),
+        ),
+        ProofError::DepthOutOfRange,
+    )
+}
+
+#[test]
+fn a_record_proof_fails_against_another_root_or_with_a_short_branch() {
+    expect_error(
+        verify_validator(
+            beacon_root: chain_root(),
+            index: v::VALIDATOR_INDEX,
+            validator: fixture_validator(),
+            branch: Branch::new(v::VALIDATOR_BRANCH),
+        ),
+        ProofError::RootMismatch,
+    )
+    var short: [u256; 49] = [0; 49]
+    var i: usize = 0
+    while i < 49 {
+        short[i] = v::VALIDATOR_BRANCH[i]
+        i += 1
+    }
+    expect_error(
+        verify_validator(
+            beacon_root: validator_root(),
+            index: v::VALIDATOR_INDEX,
+            validator: fixture_validator(),
+            branch: Branch::new(short),
+        ),
+        ProofError::DepthOutOfRange,
+    )
+}
+
+#[test]
+fn a_field_proof_for_the_first_index_past_the_registry_is_out_of_range() {
+    expect_error(
+        verify_validator_field(
+            beacon_root: validator_root(),
+            index: 1 << 40,
+            which: ValidatorField::EffectiveBalance,
+            leaf: u64_chunk(v::EFFECTIVE_BALANCE),
+            branch: Branch::new(v::VALIDATOR_EFFECTIVE_BALANCE_BRANCH),
+        ),
+        ProofError::IndexOutOfRange,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn software_sha256_matches_the_precompile_along_a_real_branch() {
+    var node = c::PAYLOAD_STATE_ROOT_LEAF
+    var level: usize = 0
+    while level < 12 {
+        let sibling = c::PAYLOAD_STATE_ROOT_BRANCH[level]
+        core::assert(
+            software_hash_pair(node, sibling) == hash_pair(node, sibling),
+        )
+        core::assert(
+            software_hash_pair(sibling, node) == hash_pair(sibling, node),
+        )
+        node = hash_pair(sibling, node)
+        level += 1
+    }
+    core::assert(software_hash_pair(0, 0) == hash_pair(0, 0))
 }

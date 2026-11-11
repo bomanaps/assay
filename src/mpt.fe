@@ -25,7 +25,7 @@ impl NodeList {
         NodeList { bytes: MemBuffer::empty(), offsets }
     }
 
-    pub fn from_fixture<const N: usize, const M: usize>(
+    pub(ingot) fn from_fixture<const N: usize, const M: usize>(
         _ bytes: [u8; N],
         _ offsets: [usize; M],
         first: usize,
@@ -55,14 +55,14 @@ impl NodeList {
         self.offsets.push(self.bytes.len())
     }
 
-    pub fn drop_last(mut self) {
+    pub(ingot) fn drop_last(mut self) {
         core::assert(self.count() > 0)
         let start = self.offsets[self.count() - 1]
         self.offsets.pop()
         self.bytes.truncate(start)
     }
 
-    pub fn duplicate_last(mut self) {
+    pub(ingot) fn duplicate_last(mut self) {
         core::assert(self.count() > 0)
         let start = self.offsets[self.count() - 1]
         let len = self.bytes.len() - start
@@ -75,7 +75,7 @@ impl NodeList {
         self.push(copy.span())
     }
 
-    pub fn flip_byte(mut self, node: usize, at: usize) {
+    pub(ingot) fn flip_byte(mut self, node: usize, at: usize) {
         let start = self.offsets[node]
         core::assert(start + at < self.offsets[node + 1])
         self.bytes[start + at] = self.bytes[start + at] ^ 0x01
@@ -178,7 +178,10 @@ pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
             if !path.is_leaf && path.len == 0 {
                 return Result::Err(ProofError::BadRlp)
             }
-            var matches = position + path.len <= KEY_NIBBLES
+            if position + path.len > KEY_NIBBLES {
+                return Result::Err(ProofError::BadRlp)
+            }
+            var matches = true
             var i: usize = 0
             while matches && i < path.len {
                 if path_nibble(path, encoded, i) != key_nibble(key.value(), position + i) {
