@@ -1,0 +1,923 @@
+use core::MemBuffer
+use core::MemSpan
+use core::default::Default
+use core::marker::Snapshot
+use core::ops::Eq
+use core::{MemArray, MemBuffer, MemSpan, MemVec}
+use core::{MemBuffer, MemSpan}
+use std::abi::Bytes
+use std::evm::crypto::keccak256
+use std::evm::rlp
+use std::evm::rlp::{self, Item}
+
+pub const EMPTY_STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
+pub const EMPTY_CODE_HASH: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
+
+pub struct Root(u256)
+
+impl Copy for Root {}
+impl Snapshot for Root {}
+
+impl Eq for Root {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Root {
+    pub const fn new(_ value: u256) -> Self {
+        Root(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct StateRoot(u256)
+
+impl Copy for StateRoot {}
+impl Snapshot for StateRoot {}
+
+impl Eq for StateRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StateRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StateRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct StorageRoot(u256)
+
+impl Copy for StorageRoot {}
+impl Snapshot for StorageRoot {}
+
+impl Eq for StorageRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StorageRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StorageRoot(value)
+    }
+
+    pub const fn empty() -> Self {
+        StorageRoot(EMPTY_STORAGE_ROOT)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct CodeHash(u256)
+
+impl Copy for CodeHash {}
+impl Snapshot for CodeHash {}
+
+impl Eq for CodeHash {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl CodeHash {
+    pub const fn new(_ value: u256) -> Self {
+        CodeHash(value)
+    }
+
+    pub const fn empty() -> Self {
+        CodeHash(EMPTY_CODE_HASH)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct BeaconRoot(u256)
+
+impl Copy for BeaconRoot {}
+impl Snapshot for BeaconRoot {}
+
+impl Eq for BeaconRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl BeaconRoot {
+    pub const fn new(_ value: u256) -> Self {
+        BeaconRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct GIndex(u256)
+
+impl Copy for GIndex {}
+impl Snapshot for GIndex {}
+
+impl Eq for GIndex {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl GIndex {
+    pub const fn new(_ value: u256) -> Self {
+        GIndex(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct TrieKey(u256)
+
+impl Copy for TrieKey {}
+impl Snapshot for TrieKey {}
+
+impl Eq for TrieKey {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl TrieKey {
+    pub const fn new(_ value: u256) -> Self {
+        TrieKey(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct AccountState {
+    pub nonce: u64,
+    pub balance: u256,
+    pub storage_root: StorageRoot,
+    pub code_hash: CodeHash,
+}
+
+impl Copy for AccountState {}
+
+impl Eq for AccountState {
+    const fn eq(self, _ other: Self) -> bool {
+        self.nonce == other.nonce
+            && self.balance == other.balance
+            && self.storage_root == other.storage_root
+            && self.code_hash == other.code_hash
+    }
+}
+
+impl Default for AccountState {
+    fn default() -> Self {
+        AccountState::missing()
+    }
+}
+
+impl AccountState {
+    pub const fn missing() -> Self {
+        AccountState {
+            nonce: 0,
+            balance: 0,
+            storage_root: StorageRoot::empty(),
+            code_hash: CodeHash::empty(),
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.nonce == 0 && self.balance == 0 && self.code_hash == CodeHash::empty()
+    }
+}
+
+pub enum Proven<T> {
+    Present(T),
+    Absent,
+}
+
+impl<T> Copy for Proven<T> where T: Copy {}
+
+impl<T: Eq> Eq for Proven<T> {
+    fn eq(self, _ other: Self) -> bool {
+        match self {
+            Self::Present(ref value) => match other {
+                Proven::Present(ref other_value) => value == other_value,
+                Proven::Absent => false,
+            },
+            Self::Absent => other.is_absent(),
+        }
+    }
+}
+
+impl<T> Proven<T> {
+    pub fn is_present(self) -> bool {
+        match self {
+            Self::Present(_) => true,
+            Self::Absent => false,
+        }
+    }
+
+    pub fn is_absent(self) -> bool {
+        !self.is_present()
+    }
+}
+
+pub enum ProofError {
+    BadRlp,
+    HashMismatch(usize),
+    PathExhausted,
+    TrailingNodes,
+    BadHexPrefix,
+    BranchValueOnPath,
+    DepthOutOfRange,
+    RootMismatch,
+    KeyNotConsumed,
+    IndexOutOfRange,
+    WrongLength,
+}
+
+impl Copy for ProofError {}
+
+impl Eq for ProofError {
+    fn eq(self, _ other: Self) -> bool {
+        match (self, other) {
+            (Self::BadRlp, Self::BadRlp) => true,
+            (Self::HashMismatch(depth), Self::HashMismatch(other_depth)) => depth == other_depth,
+            (Self::PathExhausted, Self::PathExhausted) => true,
+            (Self::TrailingNodes, Self::TrailingNodes) => true,
+            (Self::BadHexPrefix, Self::BadHexPrefix) => true,
+            (Self::BranchValueOnPath, Self::BranchValueOnPath) => true,
+            (Self::DepthOutOfRange, Self::DepthOutOfRange) => true,
+            (Self::RootMismatch, Self::RootMismatch) => true,
+            (Self::KeyNotConsumed, Self::KeyNotConsumed) => true,
+            (Self::IndexOutOfRange, Self::IndexOutOfRange) => true,
+            (Self::WrongLength, Self::WrongLength) => true,
+            _ => false,
+        }
+    }
+}
+
+pub const KEY_NIBBLES: usize = 64
+pub const FLAG_ODD: usize = 1
+pub const FLAG_LEAF: usize = 2
+
+pub fn key_nibble(_ key: u256, _ index: usize) -> usize {
+    core::assert(index < KEY_NIBBLES)
+    ((key >> ((252 - 4 * index) as u256)) & 0xf).downcast_truncate()
+}
+
+pub struct HexPath { pub is_leaf: bool, pub skip: usize, pub len: usize }
+
+impl Copy for HexPath {}
+
+pub fn decode_hex_prefix(_ encoded: MemSpan) -> Result<ProofError, HexPath> {
+    if encoded.len() == 0 {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    let first = encoded.byte_at(0) as usize
+    let flag = first >> 4
+    if flag > FLAG_LEAF + FLAG_ODD {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    let is_leaf = flag & FLAG_LEAF != 0
+    if flag & FLAG_ODD != 0 {
+        return Result::Ok(HexPath { is_leaf, skip: 1, len: 2 * encoded.len() - 1 })
+    }
+    if first & 0xf != 0 {
+        return Result::Err(ProofError::BadHexPrefix)
+    }
+    Result::Ok(HexPath { is_leaf, skip: 2, len: 2 * encoded.len() - 2 })
+}
+
+pub fn path_nibble(_ path: HexPath, _ encoded: MemSpan, _ index: usize) -> usize {
+    core::assert(index < path.len)
+    let position = path.skip + index
+    let byte = encoded.byte_at(position / 2) as usize
+    if position % 2 == 0 {
+        byte >> 4
+    } else {
+        byte & 0xf
+    }
+}
+
+pub const BRANCH_ITEMS: usize = 17
+pub const BRANCH_VALUE: usize = 16
+pub const PAIR_ITEMS: usize = 2
+pub const HASH_LEN: usize = 32
+pub const MAX_INLINE_PAYLOAD: usize = 30
+
+pub trait ProofNodes {
+    fn count(self) -> usize
+    fn node(self, _ index: usize) -> ref MemSpan
+}
+
+pub struct NodeList { bytes: MemBuffer, offsets: MemVec<usize> }
+
+impl NodeList {
+    pub fn new() -> Self {
+        var offsets = MemVec::new()
+        offsets.push(0)
+        NodeList { bytes: MemBuffer::empty(), offsets }
+    }
+
+    pub fn from_fixture<const N: usize, const M: usize>(
+        _ bytes: [u8; N],
+        _ offsets: [usize; M],
+        first: usize,
+        count: usize,
+    ) -> Self {
+        var list = NodeList::new()
+        var i = first
+        while i < first + count {
+            var node = MemBuffer::new(offsets[i + 1] - offsets[i])
+            var j: usize = 0
+            while j < node.len() {
+                node[j] = bytes[offsets[i] + j]
+                j += 1
+            }
+            list.push(node.span())
+            i += 1
+        }
+        list
+    }
+
+    pub fn push(mut self, _ node: MemSpan) {
+        var i: usize = 0
+        while i < node.len() {
+            self.bytes.push(node.byte_at(i))
+            i += 1
+        }
+        self.offsets.push(self.bytes.len())
+    }
+
+    pub fn drop_last(mut self) {
+        core::assert(self.count() > 0)
+        let start = self.offsets[self.count() - 1]
+        self.offsets.pop()
+        self.bytes.truncate(start)
+    }
+
+    pub fn duplicate_last(mut self) {
+        core::assert(self.count() > 0)
+        let start = self.offsets[self.count() - 1]
+        let len = self.bytes.len() - start
+        var copy = MemBuffer::new(len)
+        var i: usize = 0
+        while i < len {
+            copy[i] = self.bytes[start + i]
+            i += 1
+        }
+        self.push(copy.span())
+    }
+
+    pub fn flip_byte(mut self, node: usize, at: usize) {
+        let start = self.offsets[node]
+        core::assert(start + at < self.offsets[node + 1])
+        self.bytes[start + at] = self.bytes[start + at] ^ 0x01
+    }
+}
+
+impl ProofNodes for NodeList {
+    fn count(self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    fn node(self, _ index: usize) -> ref MemSpan {
+        let start = self.offsets[index]
+        self.bytes.span().slice(offset: start, len: self.offsets[index + 1] - start)
+    }
+}
+
+impl ProofNodes for MemArray<Bytes> {
+    fn count(self) -> usize {
+        self.len()
+    }
+
+    fn node(self, _ index: usize) -> ref MemSpan {
+        self[index].span()
+    }
+}
+
+pub struct Leaf { pub node: usize, pub item: Item }
+
+impl Copy for Leaf {}
+
+pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
+    ProofError,
+    Proven<Leaf>,
+> {
+    var expected = root.value()
+    var position: usize = 0
+    var depth: usize = 0
+    var node_index: usize = 0
+    var current: Option<Item> = Option::None
+    while true {
+        let item = match current {
+            Option::Some(item) => item,
+            Option::None => {
+                if depth >= nodes.count() {
+                    return Result::Err(ProofError::PathExhausted)
+                }
+                node_index = depth
+                depth += 1
+                let span = nodes.node(node_index)
+                if keccak256(span) != expected {
+                    return Result::Err(ProofError::HashMismatch(node_index))
+                }
+                if node_index > 0 && span.len() < HASH_LEN {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                match rlp::decode(span) {
+                    Option::Some(item) => item,
+                    Option::None => {
+                        return Result::Err(ProofError::BadRlp)
+                    },
+                }
+            },
+        }
+        let span = nodes.node(node_index)
+        let items = match item.items(span) {
+            Option::Some(items) => items,
+            Option::None => {
+                return Result::Err(ProofError::BadRlp)
+            },
+        }
+        let remaining = depth < nodes.count()
+        var child = item
+        var from_extension = false
+        if items.len() == BRANCH_ITEMS {
+            if position == KEY_NIBBLES {
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                let value = items[BRANCH_VALUE]
+                if value.is_list() {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                if value.payload(span).len() == 0 {
+                    return Result::Ok(Proven::Absent)
+                }
+                return Result::Ok(Proven::Present(Leaf { node: node_index, item: value }))
+            }
+            if items[BRANCH_VALUE].is_list() || items[BRANCH_VALUE].payload(span).len() != 0 {
+                return Result::Err(ProofError::BranchValueOnPath)
+            }
+            child = items[key_nibble(key.value(), position)]
+            position += 1
+        } else if items.len() == PAIR_ITEMS {
+            if items[0].is_list() {
+                return Result::Err(ProofError::BadRlp)
+            }
+            let encoded = items[0].payload(span)
+            let path = decode_hex_prefix(encoded)?
+            if !path.is_leaf && path.len == 0 {
+                return Result::Err(ProofError::BadRlp)
+            }
+            if position + path.len > KEY_NIBBLES {
+                return Result::Err(ProofError::BadRlp)
+            }
+            var matches = true
+            var i: usize = 0
+            while matches && i < path.len {
+                if path_nibble(path, encoded, i) != key_nibble(key.value(), position + i) {
+                    matches = false
+                }
+                i += 1
+            }
+            if !matches {
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                return Result::Ok(Proven::Absent)
+            }
+            position += path.len
+            if path.is_leaf {
+                if position != KEY_NIBBLES {
+                    return Result::Err(ProofError::KeyNotConsumed)
+                }
+                if remaining {
+                    return Result::Err(ProofError::TrailingNodes)
+                }
+                if items[1].is_list() {
+                    return Result::Err(ProofError::BadRlp)
+                }
+                return Result::Ok(Proven::Present(Leaf { node: node_index, item: items[1] }))
+            }
+            child = items[1]
+            from_extension = true
+        } else {
+            return Result::Err(ProofError::BadRlp)
+        }
+        if child.is_list() {
+            if child.payload(span).len() > MAX_INLINE_PAYLOAD {
+                return Result::Err(ProofError::BadRlp)
+            }
+            current = Option::Some(child)
+            continue
+        }
+        let reference = child.payload(span)
+        if reference.len() == 0 {
+            if from_extension {
+                return Result::Err(ProofError::BadRlp)
+            }
+            if remaining {
+                return Result::Err(ProofError::TrailingNodes)
+            }
+            return Result::Ok(Proven::Absent)
+        }
+        if reference.len() != HASH_LEN {
+            return Result::Err(ProofError::BadRlp)
+        }
+        expected = reference.read_word(0)
+        current = Option::None
+    }
+    Result::Err(ProofError::PathExhausted)
+}
+
+pub const ACCOUNT_FIELDS: usize = 4
+pub const ADDRESS_LEN: usize = 20
+
+pub fn account_key(_ address: [u8; 20]) -> TrieKey {
+    let buffer = address_span(address)
+    TrieKey::new(keccak256(buffer.span()))
+}
+
+fn address_span(_ address: [u8; 20]) -> MemBuffer {
+    var buffer = MemBuffer::new(ADDRESS_LEN)
+    var i: usize = 0
+    while i < ADDRESS_LEN {
+        buffer[i] = address[i]
+        i += 1
+    }
+    buffer
+}
+
+pub fn decode_account(_ encoded: MemSpan) -> Result<ProofError, AccountState> {
+    let item = match rlp::decode(encoded) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let fields = match item.items(encoded) {
+        Option::Some(fields) => fields,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if fields.len() != ACCOUNT_FIELDS {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let nonce = match fields[0].as_uint(encoded) {
+        Option::Some(nonce) => nonce,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let balance = match fields[1].as_uint(encoded) {
+        Option::Some(balance) => balance,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let storage_root = word_field(fields[2], encoded)?
+    let code_hash = word_field(fields[3], encoded)?
+    let nonce64: u64 = match nonce.downcast() {
+        Option::Some(nonce64) => nonce64,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    Result::Ok(
+        AccountState {
+            nonce: nonce64,
+            balance,
+            storage_root: StorageRoot::new(storage_root),
+            code_hash: CodeHash::new(code_hash),
+        },
+    )
+}
+
+fn word_field(_ item: Item, _ encoded: MemSpan) -> Result<ProofError, u256> {
+    if item.is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let bytes = item.payload(encoded)
+    if bytes.len() != HASH_LEN {
+        return Result::Err(ProofError::BadRlp)
+    }
+    Result::Ok(bytes.read_word(0))
+}
+
+pub fn verify_account<P: ProofNodes>(
+    state_root: StateRoot,
+    _ address: [u8; 20],
+    nodes: P,
+) -> Result<ProofError, Proven<AccountState>> {
+    match verify_trie(
+        root: state_root.as_root(),
+        key: account_key(address),
+        nodes,
+    )? {
+        Proven::Present(leaf) => {
+            let account = decode_account(leaf.item.payload(nodes.node(leaf.node)))?
+            Result::Ok(Proven::Present(account))
+        },
+        Proven::Absent => Result::Ok(Proven::Absent),
+    }
+}
+
+pub fn storage_key(_ slot: u256) -> TrieKey {
+    var buffer = MemBuffer::new(HASH_LEN)
+    buffer.write_word(offset: 0, value: slot)
+    TrieKey::new(keccak256(buffer.span()))
+}
+
+pub fn decode_storage_value(_ encoded: MemSpan) -> Result<ProofError, u256> {
+    let item = match rlp::decode(encoded) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    match item.as_uint(encoded) {
+        Option::Some(0) => Result::Err(ProofError::BadRlp),
+        Option::Some(value) => Result::Ok(value),
+        Option::None => Result::Err(ProofError::BadRlp),
+    }
+}
+
+pub fn verify_storage<P: ProofNodes>(storage_root: StorageRoot, slot: u256, nodes: P) -> Result<
+    ProofError,
+    u256,
+> {
+    if storage_root.value() == EMPTY_STORAGE_ROOT {
+        if nodes.count() != 0 {
+            return Result::Err(ProofError::TrailingNodes)
+        }
+        return Result::Ok(0)
+    }
+    match verify_trie(
+        root: storage_root.as_root(),
+        key: storage_key(slot),
+        nodes,
+    )? {
+        Proven::Present(leaf) => decode_storage_value(leaf.item.payload(nodes.node(leaf.node))),
+        Proven::Absent => Result::Ok(0),
+    }
+}
+
+pub fn load<const N: usize>(_ bytes: [u8; N]) -> MemBuffer {
+    var buffer = MemBuffer::with_capacity(N)
+    var i: usize = 0
+    while i < N {
+        buffer.push(bytes[i])
+        i += 1
+    }
+    buffer
+}
+
+pub fn load_packed<const N: usize>(_ words: [u256; N], len: usize) -> MemBuffer {
+    core::assert(len <= 32 * N && 32 * N < len + 32)
+    var buffer = MemBuffer::new(32 * N)
+    var i: usize = 0
+    while i < N {
+        buffer.write_word(offset: 32 * i, value: words[i])
+        i += 1
+    }
+    buffer.truncate(len)
+    buffer
+}
+
+const BENCH_ADDRESS_WORD: [u256; 1] = [
+    0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000,
+]
+const BENCH_STATE_ROOT: u256 = 0x51502b02719e78d7daec6ec98b6ddea37da89578d0081aedca12263be6e2c312
+const BENCH_NONCE: u64 = 1
+const BENCH_BALANCE: u256 = 0
+const BENCH_STORAGE_ROOT: u256 = 0x09ce8ac83a38fa5d8bd302e273c53afaf3105c9a45e066feb85c29f538920eaa
+const BENCH_CODE_HASH: u256 = 0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505
+const BENCH_NODE_WORDS: [u256; 121] = [
+    0xf90211a0565a5df8e1e154385ad62a31c1ada1fb520dafc6cd36e92c681d7eca,
+    0xf134416ea04adf6d49de5a33e6c6474dd7e389e3094e810248d776dd2fbf4f38,
+    0x6a775174c3a07ea77ae00e61ff6be3b39ef32fbc12e965c5d5b15f9c897c8b99,
+    0x7e1e519aa67ca0e4976e1f8f445fd148eeca9b49b2382b278dba1887b92740c1,
+    0xcbbe7cdbe0278ca0a494ac8391a38306a019bce83753ab2dfdaea7c9006aae3f,
+    0x3f0aeb0fd4d39165a041e7d03a250b82ccbe69320eb3db42317588ad3ba591fd,
+    0xfcba9408c21c6828fba067501dde3ed0019fb0ced4c91df5022641ac5c6b4a4d,
+    0x35d56e430a7e2e96549da09ff41be6b465ba503c1ae9a7ca9606a518542da384,
+    0x586756834eb6b43bcd2005a022797bbdeebeb83f513170531c1ac715e6c31524,
+    0x94aa3202adcca66a21fd0980a0f23d2a4456a611d6337c54d08c4f4c2e6c3267,
+    0x63500188d3c2f5f3102ba81d8da0939c804fab188a113882d95e87c75c02ae2b,
+    0x080bdd9ffdd35af21af1eec095e7a0c021a873e7a60f0330d38cda0afeae0f4c,
+    0x747be1332203a7d5a6772feea23ce9a0d86cda423db2c5342eca34379b8e2a99,
+    0x9227d399ed3bad5c2a52843ec9bdf5faa09b82e6242b4d339ab5e7121288871a,
+    0x88c15f888cd59f67a39e67733695cb627aa0bbde856925cc73adb678659c94f4,
+    0x23b3e88c55fe3e58c69f9a8d036e5a859f8fa0e705aac16f4bfa684ca6ec39f5,
+    0x230f55d989915699c655ae92dbb69f9b31b6f680f90211a0c46703dfc032cf8f,
+    0x2a1bf8ff91edb201c4a24f0ff6db1ef376670f903a05c2b1a0b8956a92b86beb,
+    0x6a273880bfa37846b440531d4412aa2ea3584b94f9243aaaf8a03361ca4583cc,
+    0x4020b1c93547d21e6bdc65950453e669174327152b0a45a5b6d7a0c0348c760a,
+    0x96cb3eafb486e318c62cb5acfc76f75fab3016fcdafaa2fc7eca2ba0fa24ef2a,
+    0xffcd86664c27c368d96840563534bc5343811515255dc9b781f1a696a06993e4,
+    0xf809aeeff62000a7e98987408ec0c7407eb58df7989c38193b1ba2a1b5a01732,
+    0xe9ca649c55a0c0455e3687d8a422bd8d4fd1a382b55193410c3a2672eecfa047,
+    0x01ec3d0041f6c0c058c5833bb967b9a302d3ccbbb74f70910cfabbfa2f055da0,
+    0x615d19d3cc48dba4c5df75ff308045b4d42ce4f87bdcfc491f81326c7f780042,
+    0xa0ba5c796af477d56f294f879c59e3e194c82268ceb3ac37a3ed58e11e322126,
+    0xafa0fedc580b5e846db7e419d1de499c03d44cb62db2969832cbaa7b8e5ac1ca,
+    0xdd98a006c6caeed18f9da2378f7183342ad226a5a28ea09ed51eb358ce29ac05,
+    0xbdad57a0eaea3f9eade6311893f3253127750f5b1843e5054a51476fb5980258,
+    0x9f759e00a07c24a7c10a8162ddb7380dfd7618fea04b864aadb1399c6fa4e0ff,
+    0x875aeefbfba04288344d2469e538280cded8babbe44e9d09a9f8c834af3ec539,
+    0x94ab3b1d468ca0e749f24974d8f54a8a943f5de84333c85f98ac4fb4153054ef,
+    0x6976970decf20a80f90211a0479eb113685bd03c8404efdaa3abb6a6bd4a40ed,
+    0xdb36691a016d70c5b54c305aa0c6d77c50fb8853ed91aae741a696749d5347eb,
+    0xee9562b2bfc4e08c5cf7b04727a06cafefb8bf72c57757b467d336ae060b8454,
+    0x59cf32078c0a5e3cf7ea6044277ca06d726b9c46b7e05e21670f0acccabb356d,
+    0xfc72244a4a6d131e814b355f19860ba0f0c4b51a46990e8921b87f7a36540d72,
+    0xf9e6caa7d7ee32ba04fd333c1a26f0fba0ce1761e635b542845d171359e661a0,
+    0x509fe48316d9a9e79adf04acf92fdedff5a03bd9a5cdb36e6297986da396e461,
+    0x740da977a914b479ad9c3d6d480b1bb59ea6a05689eac2fa44d7e3bf6bb74539,
+    0x895114f11edb5a65927d0bd49a3325cb70ab34a0e5ea97bec760a0617a9656ce,
+    0xe92ea6a2f6a1fc08ddf3f56f89bc064317423874a0466b20e6623da6104be0d7,
+    0x46a18a20cdbfb239073c8114af78e778dc554e9484a0c8d3315e16ddbf458f90,
+    0x56fc10bddaa5c5ebaf2063a1955f0de9d7d86abb463aa0f14cf9c794f80640c2,
+    0x0c7364cd29cd3b79f04a31a5a7d39031292a1ea3f4b75ea037c2a962110b7cd4,
+    0x30cc075934d4e38201e39fc806fee5329be6af3724d09410a09e9ab1b94d7076,
+    0xd9e12f698e70c52448fec4a76edcb508b079c457b5082d60d8a09ab7ddb0a567,
+    0x3c838d63670cbabcb7ad1f04d3a099848b125182184554db48e4a0ca1f8db913,
+    0x65a647386ea19ecb153d30acb928a014c1136567c987e7a1193cd780f90211a0,
+    0x7f5c9a0919e5ad0269ca12423e630759465f57a5d1bb7c9dee07bc0a3b415611,
+    0xa088df6301980036f41927670a617921be2edd9c091b14a9b02b14f7d1763247,
+    0xada062151f7f3125179581d3e224da6e1e51425c72bb53046718df4e6603083e,
+    0x713ea0902f0e93923e0ead752f7f3caf0ff41694a9ef864acf862e26f5cca8c2,
+    0xb39103a0d853e6b62ff0cb86f890aaa9d92592e2cc78e43c982423696c97f325,
+    0x129627d5a09dac1987e022b8813d1e57667bcc6e2028e8055c1e995b9775409e,
+    0x7bfa9f68afa08121a4a58c56ecd873cf3ea24cfeef1b9d80fe6e76d2a77c8af2,
+    0x8117697c0c7aa0b1f6a637e650f4008487ec14aa11239b3c1d643f9661e4bdf9,
+    0x590e5289e6393fa0b62add5b60db5898c8ce92880abc0937aab9083d4dc452cd,
+    0x7a93bdcb6c288665a036a20ca1f023a34cd3dd85c7af83b84349f067ff0b3185,
+    0xad1316611a25f0022ba0c1d8cbbb203817684213b24e0e81ba3dfdeddc862885,
+    0x2af3027ab4a48d195115a0e16efda5f55e2104ae0f1abfb5b86e259d07d3ef58,
+    0x5c427240e8578a83816286a07ae5e2cdbbead211b57912e6722aff2b0961f107,
+    0x5486e7ee08ced7cedd222ba8a0485feb85ee9d7eb8a7646a3d10c10051b9e456,
+    0x63d5df50c68b9b6fb052fe5160a0a85a048ae508fed3713abc3bc00deb19ca9a,
+    0x777085bd28beb9d9a0e866586dafa047fed5e00987364aa2350a919469571421,
+    0x702a534fce0cfca62670f466426a1e80f90211a0e3d094f2c07f8aaecbf41b90,
+    0x6913621d41c4d7df140d8efd565f02f8d767ee30a0f7ab5980c5d2d100cabaf4,
+    0xacf055372122f9af0370c5cf1d92bfdb0943118295a0c44fac4050607ec8b742,
+    0xb022787d185bd5fb6a99489dbcc171d33712f1bb68c9a0f87e2ce834799fee8d,
+    0x97e46ce92410a78a5dad558f144add3207f56bcdeb0be0a0b8f3292524b559e0,
+    0x15118ad0e3a5152d95901243fada6f724d8d335983b5f01aa0536475e5b393cc,
+    0x97f12606a0cd4477ec91032e2f2b942ba30cb0648967695cfba042e3c2a61203,
+    0x80d950b9544f0b4cd5436166d167de5bf8183ac51567b445982fa0aa8a1e4e23,
+    0xbf8743a7c6763c93ed5a83dec07eff70a952d721937b84768b404fa080472171,
+    0x8b718d67f07de6d54423ba7f0f3c1f83bf43901206577cd034795186a078b070,
+    0xca04c80e04362b4a7eeafbe9bc2004a9bc233f4bf4f95644cbcfb362c3a08620,
+    0xfc826c1283fde2868b45773e6044580aae10663855ca9ce0515d71e0f301a090,
+    0x67983caa2ecd1d3f4c26060c7454dad245b13a83e0e2dd99087a033c2b2325a0,
+    0xa25eee42f32dacc05c98137fedc5ecd721375761a766e3c52a640d5976133508,
+    0xa0162bf366a698dd191142d3272d05000e80d0d855c3ade122ccb9fc85a463f8,
+    0xe5a08b74dc1387a80afc334efdda3f1a112e0f577efe8c2f9cfb4364e5498e44,
+    0x1a5ca0ff36498c8046cad7affe9e6dcfb60aadfb90f9be19f2b0f6d0b021031d,
+    0xe1689c80f90211a00a9852c3c11c553c18ffd5cd06a4637f70f5f96b6d47c8f1,
+    0x3b6d5f70f8c7fae1a00d21dc62030b53a31fabf541ab7544648ce70a20dbc40d,
+    0x38e2e5647528b782fba06e6baa6bc115f6817c44f2fcca51419273c62f538b07,
+    0x23dfe346d77db300e700a088f7e96ad2308bd4c0179a2e59fd2f563b66c56d7a,
+    0xe67dc546c58387a53495daa0a5956ac6d4f04bdf816e78df527415631aead08a,
+    0xa8b2adb584c0cb5dbbfec22da0938ed706e465009cb9d893464d6a109829bed0,
+    0x5d414fa78ef2691446f13a966da0d5ccdc89778f710bfb944a1b4de705e8f822,
+    0xe3e09125494fec9ac3e64ac271f8a09d2d5e0f523b15145b7ecd71a450c77537,
+    0xe481b9983542ff4db726a88d08664aa01d41233512423c9bd9c11f90a7d993d9,
+    0xf6541a6e721a5586b6496a30b9b2fc7fa0dffca34dd0447c74102c6d8bf20d54,
+    0x471f69067cae880528973a67c96937fa46a01bf06e368a453da103a278dac5fd,
+    0x45e276a0a20f9f0d6002c3ef9c362cf55bd0a0ef515ba44ebe2c2b37c981e7b2,
+    0xac4f93936750948155216a56dd0ca433862a79a0d1e0a00d71b956f6d3d84d71,
+    0x8fe14d044d073b183707a3fef9c638b48f4cdffda07dac049227bd6a4bae4b40,
+    0x32a0e4b5198152c84061bc0a18f7550ba81ba1282ca0c46b4c8cff4baf32ddcf,
+    0x3d607b8e3d5019593f367d859418ae6fce1093002e04a018a42f537ff2eade95,
+    0x000e34b0da8d34fed4d802ddb72e21121d2510232b004e80f901b1a01cc70c87,
+    0x9480631f86b95371e8ed3cb4a683b1444268eea2753b147fb9255517a03f98e9,
+    0xce6af172ec08481a6bcffb89a264933f90ee288a82144c0eab968e42ffa00fb5,
+    0x82920a2d3ecba2d56df62fe8e8000dadddf48b388d24634b652954d687a68080,
+    0xa0c9015959346af2881b4e3fe38f673105acbe25ba4472a514954311e545ffa5,
+    0xe0a0b7ac5434d71571fe4266508ba452377e0d629ef1a96913f298ba391c2dc3,
+    0x2d50a02f5c33d3378a8e36caf8f8a70a726f4a0fa817a1d36935df69605b77e7,
+    0xd45d5ca0d36e8a2e15ed6a549ec8dc0c0e4bb7b827a4f9c70345e9aaeee5c720,
+    0xe4d0640aa0b5d6ae1c2e3bf5ab5b4aa2f3e8d6fbd0a8aa2066147d2ed9c1960a,
+    0x37e1391543a04858e149a5a2072ea380b93d54f2e553abf02fb43e095da4f4a2,
+    0x8ab57b747317a0c86bda738884dc8983b03ba189e53a473419c282c28595ab0b,
+    0xfd2e1e55921e9aa0c329d67971ead7da9f1d222990d9aa6c0f448bd161c0981e,
+    0xf504b1d7292b666180a0804cc6a6f087cd13f92574e0d02b1db807aa5043e458,
+    0x91a06764918938c0a203a0b5d933002fb8f44d57f0a6aa57bc335341491f9e1c,
+    0x55202185a12bbda5103d2580f87180a0568a3548f0c468bec66c6d91b1d72f84,
+    0xe44373c03c6e118d7edc6ba8fe9b4d0c80808080808080a0ec26e129a6fc11a5,
+    0xdcc748bd22ca4e41a0ace63cbf1cb2de018e2b9585a06fc680a0007e67d24204,
+    0xfae01f14c197bd91781f7df629973dd833a0ff3763c8508478878080808080f8,
+    0x669d2092cd7f3f78137497df02f6ccb9badda93d9782e0f230c807ba728be0b8,
+    0x46f8440180a009ce8ac83a38fa5d8bd302e273c53afaf3105c9a45e066feb85c,
+    0x29f538920eaaa0d80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1,
+    0xd31383e6b4150500000000000000000000000000000000000000000000000000,
+]
+const BENCH_NODE_LEN: usize = 3847
+const BENCH_OFFSETS: [usize; 10] = [0, 532, 1064, 1596, 2128, 2660, 3192, 3628, 3743, 3847]
+const BENCH_NODE_COUNT: usize = 9
+
+struct BenchNodes {
+    bytes: MemBuffer,
+}
+
+impl ProofNodes for BenchNodes {
+    fn count(self) -> usize {
+        BENCH_NODE_COUNT
+    }
+
+    fn node(self, _ index: usize) -> ref MemSpan {
+        let start = BENCH_OFFSETS[index]
+        self.bytes.span().slice(offset: start, len: BENCH_OFFSETS[index + 1] - start)
+    }
+}
+
+fn bench_nodes() -> BenchNodes {
+    BenchNodes { bytes: load_packed(BENCH_NODE_WORDS, len: BENCH_NODE_LEN) }
+}
+
+fn bench_checksum() -> u256 {
+    let nodes = bench_nodes()
+    var total: usize = 0
+    var i: usize = 0
+    while i < nodes.count() {
+        total += nodes.node(i).len()
+        i += 1
+    }
+    total as u256 + nodes.count() as u256
+}
+
+pub msg BenchMsg {
+    #[selector = sol("verify()")]
+    Verify -> u256,
+    #[selector = sol("baseline()")]
+    Baseline -> u256,
+}
+
+pub contract AssayBench {
+    recv BenchMsg {
+        Verify -> u256 {
+            var address: [u8; 20] = [0; 20]
+            let word = BENCH_ADDRESS_WORD[0]
+            var i: usize = 0
+            while i < 20 {
+                address[i] = ((word >> (8 * (31 - i)) as u256) & 0xff).downcast_truncate()
+                i += 1
+            }
+            match verify_account(
+                state_root: StateRoot::new(BENCH_STATE_ROOT),
+                address,
+                nodes: bench_nodes(),
+            ) {
+                Result::Ok(Proven::Present(account)) => {
+                    core::assert(account.nonce == BENCH_NONCE)
+                    core::assert(account.balance == BENCH_BALANCE)
+                    core::assert(account.storage_root == StorageRoot::new(BENCH_STORAGE_ROOT))
+                    core::assert(account.code_hash == CodeHash::new(BENCH_CODE_HASH))
+                    account.balance + 1
+                },
+                _ => core::panic_code(1),
+            }
+        }
+
+        Baseline -> u256 {
+            bench_checksum()
+        }
+    }
+}

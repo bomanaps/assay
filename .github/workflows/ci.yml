@@ -15,6 +15,8 @@ env:
   FE_VERSION: v26.6.0
   FE_VERSION_LINE: fe 26.6.0 (5b3f96a)
   FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
+  SOLC_VERSION: v0.8.30
+  SOLC_SHA256: f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7
 
 jobs:
   test:
@@ -32,6 +34,13 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_ssz.py fixtures/*.json
           "$RUNNER_TEMP/venv/bin/python3" -I tools/synth_trie.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_bench.py check
+      - name: Install solc, checked against its SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/solc-bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/solc-bin/solc" "https://github.com/ethereum/solidity/releases/download/$SOLC_VERSION/solc-static-linux"
+          echo "$SOLC_SHA256  $RUNNER_TEMP/solc-bin/solc" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/solc-bin/solc"
       - name: Trie roots against the Ethereum execution specification
         run: |
           python3 -m venv "$RUNNER_TEMP/spec"
@@ -58,3 +67,7 @@ jobs:
         run: fe test -O 2
       - name: Tests on the native backend
         run: fe test --backend native
+      - name: Gas benchmark reproduces the committed CSV
+        run: |
+          fe bench bench --solc "$RUNNER_TEMP/solc-bin/solc" -o "$RUNNER_TEMP/benchout"
+          diff "$RUNNER_TEMP/benchout/gas_benchmark.csv" docs/gas_benchmark.csv

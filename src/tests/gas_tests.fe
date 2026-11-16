@@ -1,0 +1,150 @@
+use ingot::fixture_support::load
+use ingot::fixtures::{chain_beacon as c, chain_storage_usdc as usdc, validator_beacon as v}
+use ingot::{BeaconProver, Header, NodeList, ProofNodes, ProverMsg, ValidatorRecord}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes, Bytes32, DynArray}
+use std::evm::{Address, Evm, RawOps}
+
+const STORAGE_GAS_FLOOR: u256 = 300000
+const STORAGE_GAS_CEILING: u256 = 600000
+const VALIDATOR_GAS_FLOOR: u256 = 25000
+const VALIDATOR_GAS_CEILING: u256 = 60000
+const OPEN_END: u64 = 0xffffffffffffffff
+const GAS: u256 = 30000000
+
+contract GasMockRoots {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops: RawOps, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn abi_nodes(_ list: NodeList) -> DynArray<Bytes> {
+    var out: MemVec<Bytes> = MemVec::new()
+    var i: usize = 0
+    while i < list.count() {
+        out.push(Bytes::from_payload(source: list.node(i)))
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn address_of(_ bytes: [u8; 20]) -> Address {
+    var word: u256 = 0
+    var i: usize = 0
+    while i < 20 {
+        word = (word << 8) | bytes[i] as u256
+        i += 1
+    }
+    Address::new(word)
+}
+
+fn deploy_prover(key: u64, root: u256, salt: u256) -> Address
+uses (evm: mut Evm)
+{
+    let mock = evm.create2<GasMockRoots>(value: Wei::zero(), args: (key as u256, root), salt)
+    evm.create2<BeaconProver>(value: Wei::zero(), args: (mock, OPEN_END), salt)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn prove_storage_gas_stays_inside_its_recorded_band() uses (evm: mut Evm) {
+    let prover = deploy_prover(key: c::CHILD_TIMESTAMP, root: c::BLOCK_ROOT, salt: 0)
+    let message = ProverMsg::ProveStorage {
+        timestamp: c::CHILD_TIMESTAMP,
+        header: Header {
+            slot: c::SLOT,
+            proposer_index: c::PROPOSER_INDEX,
+            parent_root: Bytes32 { val: c::PARENT_ROOT },
+            state_root: Bytes32 { val: c::HEADER_STATE_ROOT },
+            body_root: Bytes32 { val: c::BODY_ROOT },
+        },
+        state_root: Bytes32 { val: c::PAYLOAD_STATE_ROOT_LEAF },
+        state_root_branch: words(c::PAYLOAD_STATE_ROOT_BRANCH),
+        account: address_of(usdc::ADDRESS_BYTES),
+        account_nodes: abi_nodes(
+            NodeList::from_fixture(
+                usdc::ACCOUNT_BYTES,
+                usdc::ACCOUNT_OFFSETS,
+                first: 0,
+                count: usdc::ACCOUNT_NODE_COUNT,
+            ),
+        ),
+        slot: usdc::SLOT_KEYS[0],
+        storage_nodes: abi_nodes(
+            NodeList::from_fixture(
+                usdc::SLOT_BYTES,
+                usdc::SLOT_OFFSETS,
+                first: 0,
+                count: usdc::SLOT_NODE_STARTS[1] - usdc::SLOT_NODE_STARTS[0],
+            ),
+        ),
+    }
+    let before = evm.gas()
+    let (value, slot): (u256, u64) = evm.call(addr: prover, gas: GAS, value: Wei::zero(), message)
+    let used = before - evm.gas()
+    core::assert(value == usdc::SLOT_VALUES[0])
+    core::assert(slot == c::SLOT)
+    core::assert(used > STORAGE_GAS_FLOOR)
+    core::assert(used < STORAGE_GAS_CEILING)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn prove_validator_gas_stays_inside_its_recorded_band() uses (evm: mut Evm) {
+    let prover = deploy_prover(key: v::CHILD_TIMESTAMP, root: v::BLOCK_ROOT, salt: 1)
+    let message = ProverMsg::ProveValidator {
+        timestamp: v::CHILD_TIMESTAMP,
+        header: Header {
+            slot: v::SLOT,
+            proposer_index: v::PROPOSER_INDEX,
+            parent_root: Bytes32 { val: v::PARENT_ROOT },
+            state_root: Bytes32 { val: v::HEADER_STATE_ROOT },
+            body_root: Bytes32 { val: v::BODY_ROOT },
+        },
+        index: v::VALIDATOR_INDEX,
+        validator: ValidatorRecord {
+            pubkey: Bytes::from_payload(source: load(v::PUBKEY).span()),
+            withdrawal_credentials: Bytes32 { val: v::WITHDRAWAL_CREDENTIALS },
+            effective_balance: v::EFFECTIVE_BALANCE,
+            slashed: v::SLASHED,
+            activation_eligibility_epoch: v::ACTIVATION_ELIGIBILITY_EPOCH,
+            activation_epoch: v::ACTIVATION_EPOCH,
+            exit_epoch: v::EXIT_EPOCH,
+            withdrawable_epoch: v::WITHDRAWABLE_EPOCH,
+        },
+        branch: words(v::VALIDATOR_BRANCH),
+    }
+    let before = evm.gas()
+    let slot: u64 = evm.call(addr: prover, gas: GAS, value: Wei::zero(), message)
+    let used = before - evm.gas()
+    core::assert(slot == v::SLOT)
+    core::assert(used > VALIDATOR_GAS_FLOOR)
+    core::assert(used < VALIDATOR_GAS_CEILING)
+}

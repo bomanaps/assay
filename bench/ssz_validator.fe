@@ -1,0 +1,798 @@
+use core::MemBuffer
+use core::default::Default
+use core::hash::sha256_word
+use core::marker::Snapshot
+use core::ops::Eq
+use core::panics::PANIC_ASSERT
+use core::ptr::MemSlice
+use core::{MemBuffer, MemSpan, MemVec}
+use std::evm::merkle::ProofNodes
+use std::evm::ssz::u64_chunk
+
+pub const EMPTY_STORAGE_ROOT: u256 = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
+pub const EMPTY_CODE_HASH: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
+
+pub struct Root(u256)
+
+impl Copy for Root {}
+impl Snapshot for Root {}
+
+impl Eq for Root {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Root {
+    pub const fn new(_ value: u256) -> Self {
+        Root(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct StateRoot(u256)
+
+impl Copy for StateRoot {}
+impl Snapshot for StateRoot {}
+
+impl Eq for StateRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StateRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StateRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct StorageRoot(u256)
+
+impl Copy for StorageRoot {}
+impl Snapshot for StorageRoot {}
+
+impl Eq for StorageRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl StorageRoot {
+    pub const fn new(_ value: u256) -> Self {
+        StorageRoot(value)
+    }
+
+    pub const fn empty() -> Self {
+        StorageRoot(EMPTY_STORAGE_ROOT)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct CodeHash(u256)
+
+impl Copy for CodeHash {}
+impl Snapshot for CodeHash {}
+
+impl Eq for CodeHash {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl CodeHash {
+    pub const fn new(_ value: u256) -> Self {
+        CodeHash(value)
+    }
+
+    pub const fn empty() -> Self {
+        CodeHash(EMPTY_CODE_HASH)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct BeaconRoot(u256)
+
+impl Copy for BeaconRoot {}
+impl Snapshot for BeaconRoot {}
+
+impl Eq for BeaconRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl BeaconRoot {
+    pub const fn new(_ value: u256) -> Self {
+        BeaconRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
+pub struct GIndex(u256)
+
+impl Copy for GIndex {}
+impl Snapshot for GIndex {}
+
+impl Eq for GIndex {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl GIndex {
+    pub const fn new(_ value: u256) -> Self {
+        GIndex(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct TrieKey(u256)
+
+impl Copy for TrieKey {}
+impl Snapshot for TrieKey {}
+
+impl Eq for TrieKey {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl TrieKey {
+    pub const fn new(_ value: u256) -> Self {
+        TrieKey(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+}
+
+pub struct AccountState {
+    pub nonce: u64,
+    pub balance: u256,
+    pub storage_root: StorageRoot,
+    pub code_hash: CodeHash,
+}
+
+impl Copy for AccountState {}
+
+impl Eq for AccountState {
+    const fn eq(self, _ other: Self) -> bool {
+        self.nonce == other.nonce
+            && self.balance == other.balance
+            && self.storage_root == other.storage_root
+            && self.code_hash == other.code_hash
+    }
+}
+
+impl Default for AccountState {
+    fn default() -> Self {
+        AccountState::missing()
+    }
+}
+
+impl AccountState {
+    pub const fn missing() -> Self {
+        AccountState {
+            nonce: 0,
+            balance: 0,
+            storage_root: StorageRoot::empty(),
+            code_hash: CodeHash::empty(),
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.nonce == 0 && self.balance == 0 && self.code_hash == CodeHash::empty()
+    }
+}
+
+pub enum Proven<T> {
+    Present(T),
+    Absent,
+}
+
+impl<T> Copy for Proven<T> where T: Copy {}
+
+impl<T: Eq> Eq for Proven<T> {
+    fn eq(self, _ other: Self) -> bool {
+        match self {
+            Self::Present(ref value) => match other {
+                Proven::Present(ref other_value) => value == other_value,
+                Proven::Absent => false,
+            },
+            Self::Absent => other.is_absent(),
+        }
+    }
+}
+
+impl<T> Proven<T> {
+    pub fn is_present(self) -> bool {
+        match self {
+            Self::Present(_) => true,
+            Self::Absent => false,
+        }
+    }
+
+    pub fn is_absent(self) -> bool {
+        !self.is_present()
+    }
+}
+
+pub enum ProofError {
+    BadRlp,
+    HashMismatch(usize),
+    PathExhausted,
+    TrailingNodes,
+    BadHexPrefix,
+    BranchValueOnPath,
+    DepthOutOfRange,
+    RootMismatch,
+    KeyNotConsumed,
+    IndexOutOfRange,
+    WrongLength,
+}
+
+impl Copy for ProofError {}
+
+impl Eq for ProofError {
+    fn eq(self, _ other: Self) -> bool {
+        match (self, other) {
+            (Self::BadRlp, Self::BadRlp) => true,
+            (Self::HashMismatch(depth), Self::HashMismatch(other_depth)) => depth == other_depth,
+            (Self::PathExhausted, Self::PathExhausted) => true,
+            (Self::TrailingNodes, Self::TrailingNodes) => true,
+            (Self::BadHexPrefix, Self::BadHexPrefix) => true,
+            (Self::BranchValueOnPath, Self::BranchValueOnPath) => true,
+            (Self::DepthOutOfRange, Self::DepthOutOfRange) => true,
+            (Self::RootMismatch, Self::RootMismatch) => true,
+            (Self::KeyNotConsumed, Self::KeyNotConsumed) => true,
+            (Self::IndexOutOfRange, Self::IndexOutOfRange) => true,
+            (Self::WrongLength, Self::WrongLength) => true,
+            _ => false,
+        }
+    }
+}
+
+pub const MAX_BRANCH_DEPTH: usize = 64
+
+pub const fn bit_length(_ value: u256) -> u256 {
+    var length: u256 = 0
+    var rest = value
+    while rest > 0 {
+        rest >>= 1
+        length += 1
+    }
+    length
+}
+
+pub const fn depth_for(_ fields: u256) -> u256 {
+    var depth: u256 = 0
+    while (1 << depth) < fields {
+        depth += 1
+    }
+    depth
+}
+
+pub const fn field(_ fields: u256, _ index: u256) -> u256 {
+    if index >= fields {
+        core::panic_code(PANIC_ASSERT)
+    }
+    (1 << depth_for(fields)) + index
+}
+
+pub const fn concat(_ outer: u256, _ inner: u256) -> u256 {
+    if outer == 0 || inner == 0 {
+        core::panic_code(PANIC_ASSERT)
+    }
+    let shift = bit_length(inner) - 1
+    (outer << shift) | (inner - (1 << shift))
+}
+
+pub fn software_hash_pair(_ left: u256, _ right: u256) -> u256 {
+    var buffer = MemBuffer::new(64)
+    buffer.write_word(offset: 0, value: left)
+    buffer.write_word(offset: 32, value: right)
+    sha256_word(buffer.span())
+}
+
+#[cfg(target = "evm")]
+pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
+    std::evm::ssz::hash_pair(left: left, right: right)
+}
+
+#[cfg(target = "native")]
+pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
+    software_hash_pair(left, right)
+}
+
+#[cfg(target = "evm")]
+pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
+    if bytes.len() != 48 {
+        return Result::Err(ProofError::WrongLength)
+    }
+    Result::Ok(
+        std::evm::ssz::hash_tree_root<std::evm::ssz::ByteVector<48>>(bytes, start: 0, len: 48),
+    )
+}
+
+#[cfg(target = "native")]
+pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
+    if bytes.len() != 48 {
+        return Result::Err(ProofError::WrongLength)
+    }
+    var buffer = MemBuffer::new(64)
+    buffer.copy_from(dest_offset: 0, bytes)
+    Result::Ok(
+        software_hash_pair(buffer.read_word(0), buffer.read_word(32)),
+    )
+}
+
+pub struct Branch<const DEPTH: usize> where DEPTH >= 1, DEPTH <= MAX_BRANCH_DEPTH {
+    nodes: MemVec<u256>,
+}
+
+impl<const DEPTH: usize> Branch<DEPTH> {
+    pub fn new(_ nodes: [u256; DEPTH]) -> Self {
+        var words = MemVec::with_capacity(DEPTH)
+        var i: usize = 0
+        while i < DEPTH {
+            words.push(nodes[i])
+            i += 1
+        }
+        Branch { nodes: words }
+    }
+}
+
+impl<const DEPTH: usize> ProofNodes for Branch<DEPTH> {
+    fn nodes(self) -> ref MemSlice<u256> {
+        self.nodes.as_slice()
+    }
+}
+
+pub fn verify_branch<P: ProofNodes>(root: Root, leaf: u256, gindex: GIndex, branch: P) -> Result<
+    ProofError,
+    (),
+> {
+    let position = gindex.value()
+    if position == 0 {
+        return Result::Err(ProofError::DepthOutOfRange)
+    }
+    let nodes = branch.nodes()
+    if bit_length(position) - 1 != nodes.len() as u256 {
+        return Result::Err(ProofError::DepthOutOfRange)
+    }
+    var node = leaf
+    var level: usize = 0
+    while level < nodes.len() {
+        if (position >> (level as u256)) & 1 == 1 {
+            node = hash_pair(nodes[level], node)
+        } else {
+            node = hash_pair(node, nodes[level])
+        }
+        level += 1
+    }
+    if node != root.value() {
+        return Result::Err(ProofError::RootMismatch)
+    }
+    Result::Ok(())
+}
+
+pub const HEADER_FIELDS: u256 = 5
+pub const BODY_FIELDS: u256 = 13
+pub const PAYLOAD_FIELDS: u256 = 17
+pub const STATE_FIELDS: u256 = 38
+pub const FORK_FIELDS: u256 = 3
+pub const VALIDATOR_FIELDS: u256 = 8
+pub const VALIDATOR_REGISTRY_DEPTH: u256 = 40
+pub const VALIDATOR_REGISTRY_LIMIT: u256 = 1 << VALIDATOR_REGISTRY_DEPTH
+
+pub const HEADER_STATE_ROOT: u256 = field(HEADER_FIELDS, 3)
+pub const HEADER_BODY_ROOT: u256 = field(HEADER_FIELDS, 4)
+pub const EXECUTION_PAYLOAD: u256 = concat(HEADER_BODY_ROOT, field(BODY_FIELDS, 9))
+pub const PAYLOAD_STATE_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 2))
+pub const PAYLOAD_BLOCK_NUMBER: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 6))
+pub const PAYLOAD_BLOCK_HASH: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 12))
+pub const STATE_GENESIS_VALIDATORS_ROOT: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 1))
+pub const STATE_FORK_CURRENT_VERSION: u256 = concat(
+    HEADER_STATE_ROOT,
+    concat(field(STATE_FIELDS, 3), field(FORK_FIELDS, 1)),
+)
+pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_FIELDS, 11), 2))
+
+static_assert(HEADER_STATE_ROOT == 11)
+static_assert(HEADER_BODY_ROOT == 12)
+static_assert(PAYLOAD_STATE_ROOT == 6434)
+static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
+static_assert(PAYLOAD_BLOCK_HASH == 6444)
+static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
+static_assert(STATE_FORK_CURRENT_VERSION == 2829)
+
+pub enum PayloadField {
+    StateRoot,
+    BlockNumber,
+    BlockHash,
+}
+
+impl PayloadField {
+    pub const fn gindex(self) -> GIndex {
+        GIndex::new(
+            match self {
+                Self::StateRoot => PAYLOAD_STATE_ROOT,
+                Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
+                Self::BlockHash => PAYLOAD_BLOCK_HASH,
+            },
+        )
+    }
+}
+
+pub enum StateField {
+    GenesisValidatorsRoot,
+    ForkCurrentVersion,
+}
+
+impl StateField {
+    pub const fn gindex(self) -> GIndex {
+        GIndex::new(
+            match self {
+                Self::GenesisValidatorsRoot => STATE_GENESIS_VALIDATORS_ROOT,
+                Self::ForkCurrentVersion => STATE_FORK_CURRENT_VERSION,
+            },
+        )
+    }
+}
+
+pub enum ValidatorField {
+    Pubkey,
+    WithdrawalCredentials,
+    EffectiveBalance,
+}
+
+impl ValidatorField {
+    pub const fn index(self) -> u256 {
+        match self {
+            Self::Pubkey => 0,
+            Self::WithdrawalCredentials => 1,
+            Self::EffectiveBalance => 2,
+        }
+    }
+}
+
+pub const fn validator_element_gindex(_ index: u64) -> GIndex {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        core::panic_code(PANIC_ASSERT)
+    }
+    GIndex::new(
+        concat(VALIDATORS_DATA, VALIDATOR_REGISTRY_LIMIT + index as u256),
+    )
+}
+
+pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> GIndex {
+    GIndex::new(
+        concat(
+            validator_element_gindex(index).value(),
+            field(VALIDATOR_FIELDS, which.index()),
+        ),
+    )
+}
+
+static_assert(validator_element_gindex(0).value() == 1572301627719680)
+static_assert(validator_element_gindex(2345678).value() == 1572301630065358)
+static_assert(validator_gindex(0, ValidatorField::Pubkey).value() == 12578413021757440)
+static_assert(validator_gindex(0, ValidatorField::WithdrawalCredentials).value()
+    == 12578413021757441)
+static_assert(validator_gindex(2345678, ValidatorField::EffectiveBalance).value()
+    == 12578413040522866)
+
+pub struct BeaconBlockHeader {
+    pub slot: u64,
+    pub proposer_index: u64,
+    pub parent_root: u256,
+    pub state_root: u256,
+    pub body_root: u256,
+}
+
+impl Copy for BeaconBlockHeader {}
+
+impl BeaconBlockHeader {
+    pub fn root(self) -> BeaconRoot {
+        let left = hash_pair(
+            hash_pair(u64_chunk(self.slot), u64_chunk(self.proposer_index)),
+            hash_pair(self.parent_root, self.state_root),
+        )
+        let right = hash_pair(hash_pair(self.body_root, 0), hash_pair(0, 0))
+        BeaconRoot::new(hash_pair(left, right))
+    }
+}
+
+pub struct Validator {
+    pub pubkey_root: u256,
+    pub withdrawal_credentials: u256,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: u64,
+    pub activation_epoch: u64,
+    pub exit_epoch: u64,
+    pub withdrawable_epoch: u64,
+}
+
+impl Copy for Validator {}
+
+impl Validator {
+    pub fn root(self) -> u256 {
+        let slashed: u256 = if self.slashed { 1 << 248 } else { 0 }
+        let left = hash_pair(
+            hash_pair(self.pubkey_root, self.withdrawal_credentials),
+            hash_pair(u64_chunk(self.effective_balance), slashed),
+        )
+        let right = hash_pair(
+            hash_pair(
+                u64_chunk(self.activation_eligibility_epoch),
+                u64_chunk(self.activation_epoch),
+            ),
+            hash_pair(
+                u64_chunk(self.exit_epoch),
+                u64_chunk(self.withdrawable_epoch),
+            ),
+        )
+        hash_pair(left, right)
+    }
+}
+
+pub fn verify_payload_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    which: PayloadField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: which.gindex(),
+        branch,
+    )
+}
+
+pub fn verify_execution_state_root<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    state_root: u256,
+    branch: P,
+) -> Result<ProofError, StateRoot> {
+    verify_payload_field(
+        beacon_root,
+        which: PayloadField::StateRoot,
+        leaf: state_root,
+        branch,
+    )?
+    Result::Ok(StateRoot::new(state_root))
+}
+
+pub fn verify_state_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    which: StateField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: which.gindex(),
+        branch,
+    )
+}
+
+pub fn verify_validator<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    index: u64,
+    validator: Validator,
+    branch: P,
+) -> Result<ProofError, ()> {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf: validator.root(),
+        gindex: validator_element_gindex(index),
+        branch,
+    )
+}
+
+pub fn verify_validator_field<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    index: u64,
+    which: ValidatorField,
+    leaf: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf,
+        gindex: validator_gindex(index, which),
+        branch,
+    )
+}
+
+pub fn load<const N: usize>(_ bytes: [u8; N]) -> MemBuffer {
+    var buffer = MemBuffer::with_capacity(N)
+    var i: usize = 0
+    while i < N {
+        buffer.push(bytes[i])
+        i += 1
+    }
+    buffer
+}
+
+pub fn load_packed<const N: usize>(_ words: [u256; N], len: usize) -> MemBuffer {
+    core::assert(len <= 32 * N && 32 * N < len + 32)
+    var buffer = MemBuffer::new(32 * N)
+    var i: usize = 0
+    while i < N {
+        buffer.write_word(offset: 32 * i, value: words[i])
+        i += 1
+    }
+    buffer.truncate(len)
+    buffer
+}
+
+const BENCH_ROOT: u256 = 0xfa1557e717b18cb9aaa9a4f35ebaa452ac5e1bfec1981adea68df917aa8c7a6c
+const BENCH_GINDEX: u256 = 1572301630065358
+const BENCH_BRANCH: [u256; 50] = [
+    0xdca2fc9664f41dcbfe69d31772beb7bd6ca700a8cdeb2948fc5a79916e39518b,
+    0xc076f93bcb709b3656b815a380b0d7b9b46c80d83b6bc9a0331eae2898d083cd,
+    0x536c37402191bdb5d11834ce765520568afc261d49b24babcec04ece5e018451,
+    0x3891bcccc5e6ae1badaf59db3b0753d1cc678efa6d16602d2bcbac38c91977ea,
+    0xdb30585496dd249c5deaef4770921062546f49ecfc1568f46b97e00007236917,
+    0xb4a4f7a08f8144f3c1e59c9db7f42da417d26543d08e1b063f3b91a6fa03d337,
+    0x446a71816e93ee7900baf7eb5d4f9c6da7c809d53a29353589e5f4fdf132871c,
+    0xe002cf1116d8a636e8f2037e4b91503dbed55d95d2647d48ec070ee6a2dfd6f8,
+    0xb0a60e2564e370880c6349b47f556baca654fbaed8862c645490e45408cefbab,
+    0x5f8ed05bb11aacf2db64976e3b7c60d6b798ddb93bd1ac1cd2353e09e84b9eb3,
+    0xf139994839825564e6d213cbc6cdf11ec98ebb90fd5aa1f1236df9cc0d419c6e,
+    0x2fb6086f5b0e81295838efc9b59571f66a87fa3139cf6893c8d5602a7418a951,
+    0xd48be0c7794969b54c4558ebe7fd6480b9d52a5cb581c9393ae7ebe259eb2c3c,
+    0x021b3df7852422d99c7cd976551a4672bc52b03b6bb2d268e63ea41f74cdc8b0,
+    0x13d8bb4d0051da5a4218d73b79292e0cd7de5c8f8b21ad96c240341c289de901,
+    0x7d8a92b267cf319e8c6662e7beb101ad9e280ae52125fc0de5f8df338f6ab894,
+    0x499f0e18d97c4b923dd1d80a98fe12105db0be740d376e3658fc0945e2707079,
+    0x72cef623318153bad0a6236370c7e21b0b43191e67d93f533393d812e33536c7,
+    0x8166304111bd486b01ab7ad3b1862b70b62d75cd7612b210bb94e4e74d9b8270,
+    0xf893e908917775b62bff23294dbbe3a1cd8e6cc1c35b4801887b646a6f81f17f,
+    0xcddba7b592e3133393c16194fac7431abf2f5485ed711db282183c819e08ebaa,
+    0xadc7b59bcf4ce97eafec8ac5aaeaa176d0b2e2bab5e18dc1eec143f9b1bf8033,
+    0xfeb3c337d7a51a6fbf00b9e34c52e1c9195c969bd4e7a0bfd51d5c5bed9c1167,
+    0xe71f0aa83cc32edfbefa9f4d3e0174ca85182eec9f3a09f6a6c0df6377a510d7,
+    0x31206fa80a50bb6abe29085058f16212212a60eec8f049fecb92d8c8e0a84bc0,
+    0x21352bfecbeddde993839f614c3dac0a3ee37543f9b412b16199dc158e23b544,
+    0x619e312724bb6d7c3153ed9de791d764a366b389af13c58bf8a8d90481a46765,
+    0x7cdd2986268250628d0c10e385c58c6191e6fbe05191bcc04f133f2cea72c1c4,
+    0x848930bd7ba8cac54661072113fb278869e07bb8587f91392933374d017bcbe1,
+    0x8869ff2c22b28cc10510d9853292803328be4fb0e80495e8bb8d271f5b889636,
+    0xb5fe28e79f1b850f8658246ce9b6a1e7b49fc06db7143e8fe0b4f2b0c5523a5c,
+    0x985e929f70af28d0bdd1a90a808f977f597c7c778c489e98d3bd8910d31ac0f7,
+    0xc6f67e02e6e4e1bdefb994c6098953f34636ba2b6ca20a4721d2b26a886722ff,
+    0x1c9a7e5ff1cf48b4ad1582d3f4e4a1004f3b20d8c5a2b71387a4254ad933ebc5,
+    0x2f075ae229646b6f6aed19a5e372cf295081401eb893ff599b3f9acc0c0d3e7d,
+    0x328921deb59612076801e8cd61592107b5c67c79b846595cc6320c395b46362c,
+    0xbfb909fdb236ad2411b4e4883810a074b840464689986c3f8a8091827e17c327,
+    0x55d8fb3687ba3ba49f342c77f5a1f89bec83d811446e1a467139213d640b6a74,
+    0xf7210d4f8e7e1039790e7bf4efa207555a10a6db1dd4b95da313aaa88b88fe76,
+    0xad21b516cbc645ffe34ab5de1c8aef8cd4e7f8d2b51e8e1456adc7563cda206f,
+    0x76af240000000000000000000000000000000000000000000000000000000000,
+    0xc6341f0000000000000000000000000000000000000000000000000000000000,
+    0x2c5f0e77ff4109cccbf29695da82d4d2a606554fa76ad530eb8f7b30ea63691c,
+    0x1b420fac31bde29f9ca09ca9ff1046363c71d603d5c77c75aa88e2af91ccfedb,
+    0x5527e9b78521c1ea742a5efc2dc77fd06fddad9bd81564bd3bbb2b3e7506ed8e,
+    0xd8ea29d967a379240ccdc25c3f6e5ec638a5d5a58d54aeb05204fbd8227bf26b,
+    0x1bec672660b586883283a1ae70435c7ff3f90391186dd8e5769459f36c1f4fe3,
+    0x26eec1bbfa33400a3eae1bbaae40458e6312df6c90b568c77fcf690933c703e5,
+    0x548ae1cd500328193bca25d1102eb9580320c6cb4eed7c03706679aa5d8d9d1f,
+    0xba9612e7413c103a4ec477f11d8c3666614f5ebef678da44b41cc553e32f8af1,
+]
+const BENCH_DEPTH: usize = 50
+const BENCH_PUBKEY_WORDS: [u256; 2] = [
+    0x821a1c6d2115d652dd98aa6d8ffd01311778c73dc8a8087d2b97e3e3f314b127,
+    0x6af64eeb6513c249cccc21f3833b246900000000000000000000000000000000,
+]
+const BENCH_INDEX: u64 = 2345678
+const BENCH_CREDENTIALS: u256 = 0x010000000000000000000000834beedcdb85bc51bff59c0b6a8c2414aa0818cc
+const BENCH_EFFECTIVE_BALANCE: u64 = 32000000000
+const BENCH_SLASHED: bool = false
+const BENCH_ACTIVATION_ELIGIBILITY_EPOCH: u64 = 470673
+const BENCH_ACTIVATION_EPOCH: u64 = 470679
+const BENCH_EXIT_EPOCH: u64 = 18446744073709551615
+const BENCH_WITHDRAWABLE_EPOCH: u64 = 18446744073709551615
+
+pub msg BenchMsg {
+    #[selector = sol("verify()")]
+    Verify -> u256,
+    #[selector = sol("baseline()")]
+    Baseline -> u256,
+}
+
+pub contract AssayBench {
+    recv BenchMsg {
+        Verify -> u256 {
+            let pubkey = load_packed(BENCH_PUBKEY_WORDS, len: 48)
+            let pubkey_root = match bytes48_leaf(pubkey.span()) {
+                Result::Ok(root) => root,
+                Result::Err(_) => core::panic_code(1),
+            }
+            let record = Validator {
+                pubkey_root,
+                withdrawal_credentials: BENCH_CREDENTIALS,
+                effective_balance: BENCH_EFFECTIVE_BALANCE,
+                slashed: BENCH_SLASHED,
+                activation_eligibility_epoch: BENCH_ACTIVATION_ELIGIBILITY_EPOCH,
+                activation_epoch: BENCH_ACTIVATION_EPOCH,
+                exit_epoch: BENCH_EXIT_EPOCH,
+                withdrawable_epoch: BENCH_WITHDRAWABLE_EPOCH,
+            }
+            let branch: Branch<BENCH_DEPTH> = Branch::new(BENCH_BRANCH)
+            match verify_validator(
+                beacon_root: BeaconRoot::new(BENCH_ROOT),
+                index: BENCH_INDEX,
+                validator: record,
+                branch,
+            ) {
+                Result::Ok(()) => 1,
+                Result::Err(_) => core::panic_code(1),
+            }
+        }
+
+        Baseline -> u256 {
+            let pubkey = load_packed(BENCH_PUBKEY_WORDS, len: 48)
+            let pubkey_root = match bytes48_leaf(pubkey.span()) {
+                Result::Ok(root) => root,
+                Result::Err(_) => core::panic_code(1),
+            }
+            let record = Validator {
+                pubkey_root,
+                withdrawal_credentials: BENCH_CREDENTIALS,
+                effective_balance: BENCH_EFFECTIVE_BALANCE,
+                slashed: BENCH_SLASHED,
+                activation_eligibility_epoch: BENCH_ACTIVATION_ELIGIBILITY_EPOCH,
+                activation_epoch: BENCH_ACTIVATION_EPOCH,
+                exit_epoch: BENCH_EXIT_EPOCH,
+                withdrawable_epoch: BENCH_WITHDRAWABLE_EPOCH,
+            }
+            let branch: Branch<BENCH_DEPTH> = Branch::new(BENCH_BRANCH)
+            record.root() ^ BENCH_GINDEX ^ branch.nodes().len() as u256
+        }
+
+    }
+}
