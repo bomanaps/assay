@@ -1,0 +1,7 @@
+contract = "AssayBench"
+
+[[calls]]
+function = "verify()"
+
+[[calls]]
+function = "baseline()"

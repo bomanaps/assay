@@ -1,0 +1,9 @@
+fixture,function,fe_sonatina,sol,sol_opt,sol_ir,sol_ir_opt,sol_best,delta_fe_sonatina_vs_sol_best_pct
+mpt_account,verify,254425,1227871,856823,3188010,984963,856823,-70.31
+mpt_account,baseline,33924,27525,25818,39978,29072,25818,31.40
+mpt_storage,verify,198123,921820,639081,2406624,735369,639081,-69.00
+mpt_storage,baseline,30854,26397,24930,36502,27477,24930,23.76
+ssz_payload,verify,29202,35406,29118,34910,29041,29041,0.55
+ssz_payload,baseline,23122,30706,24927,30943,24678,24678,-6.31
+ssz_validator,verify,60217,73490,52858,90582,53924,52858,13.92
+ssz_validator,baseline,32647,54502,36089,73239,36280,36089,-9.54
