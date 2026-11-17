@@ -1,0 +1,361 @@
+use core::text::hex
+use core::MemSpan
+use json::Value
+use std::evm::ssz::u64_chunk
+use std::io::Stdout
+use verifier::ssz::{concat, field}
+use verifier::beacon::{validator_element_gindex, validator_gindex}
+use verifier::{
+    bytes48_leaf,
+    verify_branch,
+    verify_state_field,
+    verify_validator,
+    GIndex,
+    StateField,
+    Validator,
+    ValidatorField,
+}
+use ingot::beacon_input::{read_anchor, read_proof, Anchor, AnchorOutcome, Proof}
+use ingot::input::{decimal_u64_field, parse_hex_fixed, string_field, word_field}
+
+const MAINNET_GENESIS_VALIDATORS_ROOT: u256 = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95
+const FULU_FORK_VERSION_LEAF: u256 = 0x0600000000000000000000000000000000000000000000000000000000000000
+const LATEST_BLOCK_HASH_GINDEX: u256 = concat(field(5, 3), concat(field(38, 24), field(17, 12)))
+
+static_assert(LATEST_BLOCK_HASH_GINDEX == 23308)
+
+const RECORD_FIELD_HEAD: String<11> = "validators["
+const GENESIS_FIELD: String<23> = "genesis_validators_root"
+const FORK_FIELD: String<20> = "fork.current_version"
+const BLOCK_HASH_FIELD_HEAD: String<31> = "latest_execution_payload_header"
+const BLOCK_HASH_FIELD_TAIL: String<11> = ".block_hash"
+
+fn block_hash_field_name() -> core::MemBuffer {
+    var name = core::MemBuffer::with_capacity(42)
+    ingot::input::push_string(mut name, BLOCK_HASH_FIELD_HEAD)
+    ingot::input::push_string(mut name, BLOCK_HASH_FIELD_TAIL)
+    name
+}
+
+fn record_proof(_ document: Value, index: u64) -> Option<Proof> {
+    var name = core::MemBuffer::with_capacity(40)
+    ingot::input::push_string(mut name, RECORD_FIELD_HEAD)
+    index.fmt(mut name)
+    name.push(0x5d)
+    read_proof(document, name.span())
+}
+
+fn checked_branch(
+    _ document: Value,
+    _ name: MemSpan,
+    expected_gindex: u256,
+    expected_leaf: u256,
+    _ anchor: Anchor,
+) -> i32
+uses (out: mut Stdout)
+{
+    let proof = match read_proof(document, name) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!("FAIL the file holds no well-formed proof named ", name)
+            return 2
+        },
+    }
+    if proof.gindex != expected_gindex {
+        println!(
+            "FAIL ",
+            name,
+            " claims gindex ",
+            proof.gindex,
+            ", Fulu puts it at ",
+            expected_gindex,
+        )
+        return 1
+    }
+    if proof.leaf != expected_leaf {
+        println!(
+            "FAIL ",
+            name,
+            ": the recorded leaf does not encode the file's claimed value",
+        )
+        return 1
+    }
+    match verify_branch(
+        root: anchor.root.as_root(),
+        leaf: proof.leaf,
+        gindex: GIndex::new(proof.gindex),
+        branch: proof.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   ",
+                name,
+                " proven (gindex ",
+                proof.gindex,
+                ", ",
+                proof.branch.len(),
+                " siblings)",
+            )
+            0
+        },
+        Result::Err(_) => {
+            println!("FAIL ", name, ": branch does not reach the anchor root")
+            1
+        },
+    }
+}
+
+struct Claims { index: u64, record: Validator, pubkey_root: u256 }
+
+fn read_claims(_ document: Value) -> Option<Claims> {
+    let index = decimal_u64_field(document, "validatorIndex")?
+    let record_value = ref document.get("validator")?
+    let pubkey = parse_hex_fixed(string_field(record_value, "pubkey")?, len: 48)?
+    let pubkey_root = match bytes48_leaf(pubkey.span()) {
+        Result::Ok(root) => root,
+        Result::Err(_) => {
+            return Option::None
+        },
+    }
+    let slashed = match record_value.get("slashed")? {
+        Value::Bool(flag) => flag,
+        _ => {
+            return Option::None
+        },
+    }
+    Option::Some(
+        Claims {
+            index,
+            record: Validator {
+                pubkey_root,
+                withdrawal_credentials: word_field(record_value, "withdrawal_credentials")?,
+                effective_balance: decimal_u64_field(record_value, "effective_balance")?,
+                slashed,
+                activation_eligibility_epoch: decimal_u64_field(
+                    record_value,
+                    "activation_eligibility_epoch",
+                )?,
+                activation_epoch: decimal_u64_field(record_value, "activation_epoch")?,
+                exit_epoch: decimal_u64_field(record_value, "exit_epoch")?,
+                withdrawable_epoch: decimal_u64_field(record_value, "withdrawable_epoch")?,
+            },
+            pubkey_root,
+        },
+    )
+}
+
+pub fn verify_validator_file(_ document: Value) -> i32 uses (out: mut Stdout) {
+    let anchor = match read_anchor(document) {
+        AnchorOutcome::Proven(anchor) => anchor,
+        AnchorOutcome::Refuted => {
+            return 1
+        },
+        AnchorOutcome::Malformed => {
+            return 2
+        },
+    }
+    let claims = match read_claims(document) {
+        Option::Some(claims) => claims,
+        Option::None => {
+            println!("FAIL malformed validator record in the file")
+            return 2
+        },
+    }
+    let proof = match record_proof(document, index: claims.index) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!(
+                "FAIL the file holds no well-formed whole-record proof for validator ",
+                claims.index,
+            )
+            return 2
+        },
+    }
+    if proof.gindex != validator_element_gindex(claims.index).value() {
+        println!(
+            "FAIL the whole-record proof claims gindex ",
+            proof.gindex,
+            ", Fulu puts validator ",
+            claims.index,
+            " at ",
+            validator_element_gindex(claims.index).value(),
+        )
+        return 1
+    }
+    let record_root = claims.record.root()
+    if proof.leaf != record_root {
+        println!(
+            "FAIL the recorded leaf does not equal the record's hash tree root",
+        )
+        return 1
+    }
+    match verify_validator(
+        beacon_root: anchor.root,
+        index: claims.index,
+        validator: claims.record,
+        branch: proof.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   validator ",
+                claims.index,
+                " record proven whole: balance ",
+                claims.record.effective_balance,
+                ", slashed ",
+                claims.record.slashed,
+                ", exit epoch ",
+                claims.record.exit_epoch,
+            )
+        },
+        Result::Err(_) => {
+            println!(
+                "FAIL validator ",
+                claims.index,
+                ": record branch does not reach the anchor root",
+            )
+            return 1
+        },
+    }
+    var sub = core::MemBuffer::with_capacity(60)
+    var head = record_proof_prefix(index: claims.index)
+    let field_checks = [
+        (0, claims.pubkey_root),
+        (1, claims.record.withdrawal_credentials),
+        (2, u64_chunk(claims.record.effective_balance)),
+    ]
+    var i: usize = 0
+    while i < 3 {
+        let (which_index, leaf) = field_checks[i]
+        let which = match which_index {
+            0 => ValidatorField::Pubkey,
+            1 => ValidatorField::WithdrawalCredentials,
+            _ => ValidatorField::EffectiveBalance,
+        }
+        sub = field_name(head.span(), which_index)
+        let field_code = checked_branch(
+            document,
+            sub.span(),
+            expected_gindex: validator_gindex(claims.index, which).value(),
+            expected_leaf: leaf,
+            anchor,
+        )
+        if field_code != 0 {
+            return field_code
+        }
+        i += 1
+    }
+    let genesis_name = ingot::input::string_buffer(GENESIS_FIELD)
+    let genesis_code = checked_branch(
+        document,
+        genesis_name.span(),
+        expected_gindex: StateField::GenesisValidatorsRoot.gindex().value(),
+        expected_leaf: MAINNET_GENESIS_VALIDATORS_ROOT,
+        anchor,
+    )
+    if genesis_code != 0 {
+        return genesis_code
+    }
+    let fork_name = ingot::input::string_buffer(FORK_FIELD)
+    let fork_code = checked_branch(
+        document,
+        fork_name.span(),
+        expected_gindex: StateField::ForkCurrentVersion.gindex().value(),
+        expected_leaf: FULU_FORK_VERSION_LEAF,
+        anchor,
+    )
+    if fork_code != 0 {
+        return fork_code
+    }
+    let block_hash_name = block_hash_field_name()
+    let block_hash = match read_proof(document, block_hash_name.span()) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!(
+                "FAIL the file holds no well-formed proof named ",
+                block_hash_name,
+            )
+            return 2
+        },
+    }
+    if block_hash.gindex != LATEST_BLOCK_HASH_GINDEX {
+        println!(
+            "FAIL latest payload block hash claims gindex ",
+            block_hash.gindex,
+            ", Fulu puts it at ",
+            LATEST_BLOCK_HASH_GINDEX,
+        )
+        return 1
+    }
+    let claimed_hash = match document.get("execution") {
+        Option::Some(ref execution) => {
+            match execution.get("header") {
+                Option::Some(ref header) => ingot::input::word_field(header, "hash"),
+                Option::None => Option::None,
+            }
+        },
+        Option::None => Option::None,
+    }
+    match claimed_hash {
+        Option::Some(hash_claim) => {
+            if block_hash.leaf != hash_claim {
+                println!(
+                    "FAIL the proven latest block hash does not match the execution header's claim",
+                )
+                return 1
+            }
+        },
+        Option::None => {
+            println!("FAIL the file holds no well-formed execution header hash")
+            return 2
+        },
+    }
+    match verify_branch(
+        root: anchor.root.as_root(),
+        leaf: block_hash.leaf,
+        gindex: GIndex::new(block_hash.gindex),
+        branch: block_hash.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   state's latest execution block hash 0x",
+                hex(block_hash.leaf, 32),
+                " proven",
+            )
+        },
+        Result::Err(_) => {
+            println!(
+                "FAIL latest payload block hash: branch does not reach the anchor root",
+            )
+            return 1
+        },
+    }
+    println!(
+        "verified: the whole validator record, the chain identity and the execution link are proven from the beacon root alone",
+    )
+    0
+}
+
+fn record_proof_prefix(index: u64) -> core::MemBuffer {
+    var head = core::MemBuffer::with_capacity(40)
+    ingot::input::push_string(mut head, RECORD_FIELD_HEAD)
+    index.fmt(mut head)
+    head.push(0x5d)
+    head.push(0x2e)
+    head
+}
+
+fn field_name(_ prefix: MemSpan, _ which: usize) -> core::MemBuffer {
+    var name = core::MemBuffer::with_capacity(prefix.len() + 24)
+    name.extend_from(prefix)
+    let pubkey: String<6> = "pubkey"
+    let credentials: String<22> = "withdrawal_credentials"
+    let balance: String<17> = "effective_balance"
+    if which == 0 {
+        ingot::input::push_string(mut name, pubkey)
+    } else if which == 1 {
+        ingot::input::push_string(mut name, credentials)
+    } else {
+        ingot::input::push_string(mut name, balance)
+    }
+    name
+}

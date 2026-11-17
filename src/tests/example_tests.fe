@@ -1,0 +1,231 @@
+use ingot::fixture_support::load
+use ingot::fixtures::{validator_beacon as v, validator_slashed as s}
+use ingot::{
+    BeaconProver,
+    GateMsg,
+    Header,
+    NotEligible,
+    ProverMsg,
+    ValidatorGate,
+    ValidatorRecord,
+    FAR_FUTURE_EPOCH,
+    INELIGIBLE_CREDENTIALS,
+    INELIGIBLE_SLASHED,
+    INELIGIBLE_EXITING,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes, Bytes32, DynArray}
+use std::evm::{Address, CallOutcome, Evm, RawOps, is_error}
+
+const GAS: u256 = 30000000
+const OPEN_END: u64 = 0xffffffffffffffff
+
+contract ExampleMockRoots {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops: RawOps, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn gate_for(key: u64, root: u256, credentials: u256, salt: u256) -> Address
+uses (evm: mut Evm)
+{
+    let mock = evm.create2<ExampleMockRoots>(value: Wei::zero(), args: (key as u256, root), salt)
+    let prover = evm.create2<BeaconProver>(value: Wei::zero(), args: (mock, OPEN_END), salt)
+    evm.create2<ValidatorGate>(value: Wei::zero(), args: (prover, credentials), salt)
+}
+
+fn active_header() -> Header {
+    Header {
+        slot: v::SLOT,
+        proposer_index: v::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: v::PARENT_ROOT },
+        state_root: Bytes32 { val: v::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: v::BODY_ROOT },
+    }
+}
+
+fn active_record() -> ValidatorRecord {
+    ValidatorRecord {
+        pubkey: Bytes::from_payload(source: load(v::PUBKEY).span()),
+        withdrawal_credentials: Bytes32 { val: v::WITHDRAWAL_CREDENTIALS },
+        effective_balance: v::EFFECTIVE_BALANCE,
+        slashed: v::SLASHED,
+        activation_eligibility_epoch: v::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: v::ACTIVATION_EPOCH,
+        exit_epoch: v::EXIT_EPOCH,
+        withdrawable_epoch: v::WITHDRAWABLE_EPOCH,
+    }
+}
+
+fn approve_active(_ gate: Address, record: own ValidatorRecord) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: gate,
+        gas: GAS,
+        value: Wei::zero(),
+        message: GateMsg::Approve {
+            timestamp: v::CHILD_TIMESTAMP,
+            header: active_header(),
+            index: v::VALIDATOR_INDEX,
+            validator: record,
+            branch: words(v::VALIDATOR_BRANCH),
+        },
+    )
+}
+
+fn rejected_code(_ outcome: CallOutcome) -> u256 {
+    core::assert(!outcome.success())
+    core::assert(is_error<NotEligible>(outcome.returndata()))
+    outcome.returndata().read_word(4)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn an_unslashed_proven_validator_with_the_required_credentials_is_approved()
+uses (evm: mut Evm)
+{
+    let gate = gate_for(
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        credentials: v::WITHDRAWAL_CREDENTIALS,
+        salt: 0,
+    )
+    let outcome = approve_active(gate, record: active_record())
+    core::assert(outcome.success())
+    core::assert(outcome.returndata().read_word(0) == v::SLOT as u256)
+    let stored: u64 = evm
+        .call(
+            addr: gate,
+            gas: GAS,
+            value: Wei::zero(),
+            message: GateMsg::ApprovedSlot { index: v::VALIDATOR_INDEX },
+        )
+    core::assert(stored == v::SLOT)
+    let unknown: u64 = evm
+        .call(
+            addr: gate,
+            gas: GAS,
+            value: Wei::zero(),
+            message: GateMsg::ApprovedSlot { index: v::VALIDATOR_INDEX + 1 },
+        )
+    core::assert(unknown == 0)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn the_gate_refuses_policy_violations_before_proving() uses (evm: mut Evm) {
+    let gate = gate_for(
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        credentials: v::WITHDRAWAL_CREDENTIALS,
+        salt: 1,
+    )
+    var slashed = active_record()
+    slashed.slashed = true
+    core::assert(
+        rejected_code(approve_active(gate, record: slashed)) == INELIGIBLE_SLASHED as u256,
+    )
+    var exiting = active_record()
+    exiting.exit_epoch = 123456
+    core::assert(
+        rejected_code(approve_active(gate, record: exiting)) == INELIGIBLE_EXITING as u256,
+    )
+    let wrong = gate_for(
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        credentials: v::WITHDRAWAL_CREDENTIALS ^ 1,
+        salt: 2,
+    )
+    core::assert(
+        rejected_code(approve_active(wrong, record: active_record()))
+            == INELIGIBLE_CREDENTIALS as u256,
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_record_that_claims_eligibility_it_cannot_prove_is_rejected_by_the_prover()
+uses (evm: mut Evm)
+{
+    let gate = gate_for(
+        key: v::CHILD_TIMESTAMP,
+        root: v::BLOCK_ROOT,
+        credentials: v::WITHDRAWAL_CREDENTIALS,
+        salt: 3,
+    )
+    var inflated = active_record()
+    inflated.effective_balance = v::EFFECTIVE_BALANCE + 1000000000
+    let outcome = approve_active(gate, record: inflated)
+    core::assert(!outcome.success())
+    core::assert(!is_error<NotEligible>(outcome.returndata()))
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_really_slashed_validator_cannot_pretend_to_be_clean() uses (evm: mut Evm) {
+    let gate = gate_for(
+        key: s::CHILD_TIMESTAMP,
+        root: s::BLOCK_ROOT,
+        credentials: s::WITHDRAWAL_CREDENTIALS,
+        salt: 4,
+    )
+    var laundered = ValidatorRecord {
+        pubkey: Bytes::from_payload(source: load(s::PUBKEY).span()),
+        withdrawal_credentials: Bytes32 { val: s::WITHDRAWAL_CREDENTIALS },
+        effective_balance: s::EFFECTIVE_BALANCE,
+        slashed: false,
+        activation_eligibility_epoch: s::ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: s::ACTIVATION_EPOCH,
+        exit_epoch: FAR_FUTURE_EPOCH,
+        withdrawable_epoch: s::WITHDRAWABLE_EPOCH,
+    }
+    let outcome = evm
+        .try_call(
+            addr: gate,
+            gas: GAS,
+            value: Wei::zero(),
+            message: GateMsg::Approve {
+                timestamp: s::CHILD_TIMESTAMP,
+                header: Header {
+                    slot: s::SLOT,
+                    proposer_index: s::PROPOSER_INDEX,
+                    parent_root: Bytes32 { val: s::PARENT_ROOT },
+                    state_root: Bytes32 { val: s::HEADER_STATE_ROOT },
+                    body_root: Bytes32 { val: s::BODY_ROOT },
+                },
+                index: s::VALIDATOR_INDEX,
+                validator: laundered,
+                branch: words(s::VALIDATOR_BRANCH),
+            },
+        )
+    core::assert(!outcome.success())
+    core::assert(!is_error<NotEligible>(outcome.returndata()))
+}

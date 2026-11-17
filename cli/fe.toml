@@ -1,0 +1,7 @@
+[ingot]
+name = "assay"
+version = "0.1.0"
+
+[dependencies]
+verifier = { path = ".." }
+json = { source = "https://github.com/fe-lang/json.git", rev = "93b2935c254085558dfd96885744cdf42ac1fe71" }

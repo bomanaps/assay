@@ -761,13 +761,47 @@ class Generator(unittest.TestCase):
             scratch_dir = pathlib.Path(scratch)
             for path in FIXTURES.glob("*.json"):
                 shutil.copy(path, scratch_dir / path.name)
+            shutil.copytree(FIXTURES / "consensus_spec", scratch_dir / "consensus_spec")
             mutate(scratch_dir)
             saved = gen_fixtures.FIXTURES
+            saved_spec = gen_fixtures.CONSENSUS_SPEC
             gen_fixtures.FIXTURES = scratch_dir
+            gen_fixtures.CONSENSUS_SPEC = scratch_dir / "consensus_spec"
             try:
                 return gen_fixtures.expected_files()
             finally:
                 gen_fixtures.FIXTURES = saved
+                gen_fixtures.CONSENSUS_SPEC = saved_spec
+
+    def spec_file(self, directory, container, case, name):
+        return directory / "consensus_spec" / container / f"case_{case}" / name
+
+    def test_spec_vector_root_tamper_is_refused(self):
+        def change(directory):
+            path = self.spec_file(directory, "Validator", 2, "roots.yaml")
+            path.write_text(flip(path.read_text().rstrip()[:-1]) + "'\n")
+        self.refuses(change, "the oracle disagrees with the spec root")
+
+    def test_spec_vector_value_tamper_is_refused(self):
+        def change(directory):
+            path = self.spec_file(directory, "BeaconBlockHeader", 1, "value.yaml")
+            lines = path.read_text().splitlines()
+            slot = int(lines[0].removeprefix("slot: "))
+            lines[0] = f"slot: {slot - 1}"
+            path.write_text("\n".join(lines) + "\n")
+        self.refuses(change, "the oracle disagrees with the spec root")
+
+    def test_spec_vector_unknown_field_is_refused(self):
+        def change(directory):
+            path = self.spec_file(directory, "Validator", 0, "value.yaml")
+            path.write_text(path.read_text() + "extra: 5\n")
+        self.refuses(change, "differ from")
+
+    def test_spec_vector_sloppy_yaml_is_refused(self):
+        def change(directory):
+            path = self.spec_file(directory, "Validator", 0, "value.yaml")
+            path.write_text(path.read_text().replace("slashed: true", "slashed: True"))
+        self.refuses(change, "unexpected value")
 
     def test_committed_fixtures_generate(self):
         self.assertTrue(self.generate_from(lambda d: None))

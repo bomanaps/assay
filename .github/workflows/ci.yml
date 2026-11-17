@@ -17,6 +17,7 @@ env:
   FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
   SOLC_VERSION: v0.8.30
   SOLC_SHA256: f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7
+  SPEC_TESTS_TAG: v1.6.0-beta.0
 
 jobs:
   test:
@@ -41,6 +42,18 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/solc-bin/solc" "https://github.com/ethereum/solidity/releases/download/$SOLC_VERSION/solc-static-linux"
           echo "$SOLC_SHA256  $RUNNER_TEMP/solc-bin/solc" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/solc-bin/solc"
+      - name: Vendored consensus-spec vectors match upstream at the pinned tag
+        shell: bash
+        run: |
+          base="https://raw.githubusercontent.com/ethereum/consensus-spec-tests/$SPEC_TESTS_TAG"
+          for container in Validator BeaconBlockHeader; do
+            for case in case_0 case_1 case_2 case_3 case_4; do
+              for file in value.yaml roots.yaml; do
+                curl -fsSL --retry 3 "$base/tests/mainnet/fulu/ssz_static/$container/ssz_random/$case/$file"                   | diff - "fixtures/consensus_spec/$container/$case/$file"
+              done
+            done
+          done
+          curl -fsSL --retry 3 "$base/LICENSE" | diff - fixtures/consensus_spec/LICENSE
       - name: Trie roots against the Ethereum execution specification
         run: |
           python3 -m venv "$RUNNER_TEMP/spec"
@@ -67,6 +80,13 @@ jobs:
         run: fe test -O 2
       - name: Tests on the native backend
         run: fe test --backend native
+      - name: Native CLI builds, verifies, and refuses tampers
+        run: |
+          cd cli
+          fe fmt --check
+          fe build --backend native -O 2 --emit executable --out-dir "$RUNNER_TEMP/cli-out" .
+          cd ..
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/check_cli.py "$RUNNER_TEMP/cli-out/assay" fixtures
       - name: Gas benchmark reproduces the committed CSV
         run: |
           fe bench bench --solc "$RUNNER_TEMP/solc-bin/solc" -o "$RUNNER_TEMP/benchout"

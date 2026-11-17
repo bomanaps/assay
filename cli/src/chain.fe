@@ -1,0 +1,482 @@
+use core::text::hex
+use core::{MemSpan, MemVec}
+use json::Value
+use std::fs::Fs
+use std::evm::ssz::u64_chunk
+use std::io::Stdout
+use verifier::{
+    verify_account,
+    verify_execution_state_root,
+    verify_payload_field,
+    verify_storage,
+    AccountState,
+    GIndex,
+    NodeList,
+    PayloadField,
+    Proven,
+    StateRoot,
+    StorageRoot,
+    EMPTY_CODE_HASH,
+    EMPTY_STORAGE_ROOT,
+}
+use ingot::beacon_input::{read_anchor, read_proof, Anchor, AnchorOutcome}
+use ingot::input::{
+    parse_hex_blob,
+    parse_hex_fixed,
+    quantity_field,
+    sibling_path,
+    span_equals,
+    string_field,
+    word_field,
+}
+
+const STATE_ROOT_FIELD: String<28> = "execution_payload.state_root"
+const BLOCK_NUMBER_FIELD: String<30> = "execution_payload.block_number"
+const BLOCK_HASH_FIELD: String<28> = "execution_payload.block_hash"
+
+fn payload_proof(
+    _ document: Value,
+    _ name: MemSpan,
+    which: PayloadField,
+    _ anchor: Anchor,
+    claimed: u256,
+) -> Result<i32, u256>
+uses (out: mut Stdout)
+{
+    let proof = match read_proof(document, name) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!("FAIL the file holds no well-formed proof named ", name)
+            return Result::Err(2)
+        },
+    }
+    if proof.gindex != which.gindex().value() {
+        println!(
+            "FAIL ",
+            name,
+            " claims gindex ",
+            proof.gindex,
+            ", Fulu puts it at ",
+            which.gindex().value(),
+        )
+        return Result::Err(1)
+    }
+    if proof.leaf != claimed {
+        println!(
+            "FAIL ",
+            name,
+            ": the recorded leaf does not match the execution header's claim",
+        )
+        return Result::Err(1)
+    }
+    match verify_payload_field(
+        beacon_root: anchor.root,
+        which,
+        leaf: proof.leaf,
+        branch: proof.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   ",
+                name,
+                " = 0x",
+                hex(proof.leaf, 32),
+                " (gindex ",
+                proof.gindex,
+                ", ",
+                proof.branch.len(),
+                " siblings)",
+            )
+            Result::Ok(proof.leaf)
+        },
+        Result::Err(_) => {
+            println!("FAIL ", name, ": branch does not reach the anchor root")
+            Result::Err(1)
+        },
+    }
+}
+
+struct ExecutionClaims { state_root: u256, number_leaf: u256, hash: u256 }
+
+fn read_execution_claims(_ header: Value) -> Option<ExecutionClaims> {
+    let number = quantity_field(header, "number")?
+    if number >> 64 != 0 {
+        return Option::None
+    }
+    Option::Some(
+        ExecutionClaims {
+            state_root: word_field(header, "stateRoot")?,
+            number_leaf: u64_chunk(number.downcast_truncate()),
+            hash: word_field(header, "hash")?,
+        },
+    )
+}
+
+fn node_list(_ nodes: Value) -> Option<NodeList> {
+    match nodes {
+        Value::Array(ref items) => {
+            var list = NodeList::new()
+            var i: usize = 0
+            while i < items.len() {
+                let bytes = parse_hex_blob(items[i].as_string()?)?
+                list.push(bytes.span())
+                i += 1
+            }
+            Option::Some(list)
+        },
+        _ => Option::None,
+    }
+}
+
+fn address_bytes(_ buffer_value: Value) -> Option<[u8; 20]> {
+    let bytes = parse_hex_fixed(buffer_value.as_string()?, len: 20)?
+    var address: [u8; 20] = [0; 20]
+    var i: usize = 0
+    while i < 20 {
+        address[i] = bytes.span().byte_at(i)
+        i += 1
+    }
+    Option::Some(address)
+}
+
+fn absent_claims_match(nonce: u256, balance: u256, storage_hash: u256, code_hash: u256) -> bool {
+    if nonce != 0 || balance != 0 {
+        return false
+    }
+    if storage_hash == 0 && code_hash == 0 {
+        return true
+    }
+    storage_hash == EMPTY_STORAGE_ROOT && code_hash == EMPTY_CODE_HASH
+}
+
+fn verify_trie_file(_ document: Value, _ name: MemSpan, state_root: StateRoot) -> Option<usize>
+uses (out: mut Stdout)
+{
+    if document.get("proof").is_none() {
+        println!("FAIL ", name, ": no proof object")
+        return Option::None
+    }
+    let proof = ref document["proof"]
+    let header_root = match document.get("header") {
+        Option::Some(ref header) => word_field(header, "stateRoot"),
+        Option::None => Option::None,
+    }
+    if header_root != Option::Some(state_root.value()) {
+        println!(
+            "FAIL ",
+            name,
+            ": captured at a different state root than the proven one",
+        )
+        return Option::None
+    }
+    let parsed = parse_trie_claims(proof)
+    let claims = match parsed {
+        Option::Some(claims) => claims,
+        Option::None => {
+            println!("FAIL ", name, ": malformed account fields")
+            return Option::None
+        },
+    }
+    let decoded = match verify_account(state_root, claims.address, nodes: claims.account_nodes) {
+        Result::Ok(outcome) => outcome,
+        Result::Err(_) => {
+            println!("FAIL ", name, ": account proof rejected")
+            return Option::None
+        },
+    }
+    var storage_root = StorageRoot::empty()
+    match decoded {
+        Proven::Present(account) => {
+            if account.nonce as u256 != claims.nonce
+                || account.balance != claims.balance
+                || account.storage_root.value() != claims.storage_hash
+                || account.code_hash.value() != claims.code_hash {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": decoded account disagrees with the file's claims",
+                )
+                return Option::None
+            }
+            storage_root = account.storage_root
+            println!(
+                "ok   ",
+                name,
+                ": account proven, nonce ",
+                account.nonce,
+                ", balance ",
+                account.balance,
+            )
+        },
+        Proven::Absent => {
+            if !absent_claims_match(
+                nonce: claims.nonce,
+                balance: claims.balance,
+                storage_hash: claims.storage_hash,
+                code_hash: claims.code_hash,
+            ) {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": the trie proves this account absent, the file claims otherwise",
+                )
+                return Option::None
+            }
+            println!("ok   ", name, ": account proven absent")
+        },
+    }
+    verify_slots(proof, name, storage_root)
+}
+
+struct TrieClaims {
+    address: [u8; 20],
+    nonce: u256,
+    balance: u256,
+    storage_hash: u256,
+    code_hash: u256,
+    account_nodes: NodeList,
+}
+
+fn parse_trie_claims(_ proof: Value) -> Option<TrieClaims> {
+    Option::Some(
+        TrieClaims {
+            address: address_bytes(proof.get("address")?)?,
+            nonce: quantity_field(proof, "nonce")?,
+            balance: quantity_field(proof, "balance")?,
+            storage_hash: word_field(proof, "storageHash")?,
+            code_hash: word_field(proof, "codeHash")?,
+            account_nodes: node_list(proof.get("accountProof")?)?,
+        },
+    )
+}
+
+fn verify_slots(_ proof: Value, _ name: MemSpan, storage_root: StorageRoot) -> Option<usize>
+uses (out: mut Stdout)
+{
+    if proof.get("storageProof").is_none() {
+        println!("FAIL ", name, ": no storageProof array")
+        return Option::None
+    }
+    match proof["storageProof"] {
+        Value::Array(ref entries) => {
+            var i: usize = 0
+            while i < entries.len() {
+                let entry = ref entries[i]
+                let parsed = parse_slot(entry)
+                let (slot, claimed, nodes) = match parsed {
+                    Option::Some(values) => values,
+                    Option::None => {
+                        println!("FAIL ", name, ": malformed storage proof entry ", i)
+                        return Option::None
+                    },
+                }
+                match verify_storage(storage_root, slot, nodes) {
+                    Result::Ok(value) => {
+                        if value != claimed {
+                            println!(
+                                "FAIL ",
+                                name,
+                                ": slot 0x",
+                                hex(slot, 32),
+                                " proves ",
+                                value,
+                                ", the file claims ",
+                                claimed,
+                            )
+                            return Option::None
+                        }
+                        println!("ok   ", name, ": slot 0x", hex(slot, 32), " = ", value)
+                    },
+                    Result::Err(_) => {
+                        println!(
+                            "FAIL ",
+                            name,
+                            ": storage proof for slot 0x",
+                            hex(slot, 32),
+                            " rejected",
+                        )
+                        return Option::None
+                    },
+                }
+                i += 1
+            }
+            Option::Some(entries.len())
+        },
+        _ => {
+            println!("FAIL ", name, ": no storageProof array")
+            Option::None
+        },
+    }
+}
+
+fn parse_slot(_ entry: Value) -> Option<(u256, u256, NodeList)> {
+    let key = ingot::input::parse_hex_word(string_field(entry, "key")?)?
+    let value = quantity_field(entry, "value")?
+    let nodes = node_list(entry.get("proof")?)?
+    Option::Some((key, value, nodes))
+}
+
+pub fn verify_chain(_ document: Value, input_path: MemSpan) -> i32
+uses (fs: Fs, out: mut Stdout)
+{
+    let anchor = match read_anchor(document) {
+        AnchorOutcome::Proven(anchor) => anchor,
+        AnchorOutcome::Refuted => {
+            return 1
+        },
+        AnchorOutcome::Malformed => {
+            return 2
+        },
+    }
+    if document.get("execution").is_none() {
+        println!("FAIL the file holds no execution object")
+        return 2
+    }
+    let execution = ref document["execution"]
+    if execution.get("header").is_none() {
+        println!("FAIL the file holds no execution header")
+        return 2
+    }
+    let claims = match read_execution_claims(ref execution["header"]) {
+        Option::Some(claims) => claims,
+        Option::None => {
+            println!("FAIL malformed execution header claims")
+            return 2
+        },
+    }
+    let state_root_name = ingot::input::string_buffer(STATE_ROOT_FIELD)
+    let block_number_name = ingot::input::string_buffer(BLOCK_NUMBER_FIELD)
+    let block_hash_name = ingot::input::string_buffer(BLOCK_HASH_FIELD)
+    let state_root_leaf = match payload_proof(
+        document,
+        state_root_name.span(),
+        which: PayloadField::StateRoot,
+        anchor,
+        claimed: claims.state_root,
+    ) {
+        Result::Ok(leaf) => leaf,
+        Result::Err(code) => {
+            return code
+        },
+    }
+    match payload_proof(
+        document,
+        block_number_name.span(),
+        which: PayloadField::BlockNumber,
+        anchor,
+        claimed: claims.number_leaf,
+    ) {
+        Result::Ok(_) => {},
+        Result::Err(code) => {
+            return code
+        },
+    }
+    match payload_proof(
+        document,
+        block_hash_name.span(),
+        which: PayloadField::BlockHash,
+        anchor,
+        claimed: claims.hash,
+    ) {
+        Result::Ok(_) => {},
+        Result::Err(code) => {
+            return code
+        },
+    }
+    let state_root = StateRoot::new(state_root_leaf)
+    if execution.get("mptFixtures").is_none() {
+        println!("FAIL the file lists no mptFixtures")
+        return 2
+    }
+    match execution["mptFixtures"] {
+        Value::Array(ref names) => {
+            if names.len() == 0 {
+                println!("FAIL the file links no trie fixtures")
+                return 2
+            }
+            var slots: usize = 0
+            var i: usize = 0
+            while i < names.len() {
+                let outcome = verify_linked_file(ref names[i], position: i, input_path, state_root)
+                let (code, counted) = outcome
+                if code != 0 { return code }
+                slots += counted
+                i += 1
+            }
+            println!(
+                "verified: ",
+                names.len(),
+                " linked accounts and ",
+                slots,
+                " slots proven from the beacon root alone",
+            )
+            0
+        },
+        _ => {
+            println!("FAIL the file lists no mptFixtures")
+            2
+        },
+    }
+}
+
+fn plain_fixture_name(_ name: MemSpan) -> bool {
+    if name.len() == 0 || name.len() > 64 {
+        return false
+    }
+    var i: usize = 0
+    while i < name.len() {
+        let byte = name.byte_at(i)
+        let lowercase = byte >= 0x61 && byte <= 0x7a
+        let digit = byte >= 0x30 && byte <= 0x39
+        if !lowercase && !digit && byte != 0x5f {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn verify_linked_file(
+    _ entry: Value,
+    position: usize,
+    input_path: MemSpan,
+    state_root: StateRoot,
+) -> (i32, usize)
+uses (fs: Fs, out: mut Stdout)
+{
+    match entry.as_string() {
+        Option::Some(ref name) => {
+            if !plain_fixture_name(name) {
+                println!(
+                    "FAIL mptFixtures entry ",
+                    position,
+                    " is not a plain fixture name",
+                )
+                return (2, 0)
+            }
+            let path = sibling_path(input_path, name)
+            let bytes = match fs.read(path.span()) {
+                Result::Ok(bytes) => bytes,
+                Result::Err(_) => {
+                    println!("FAIL cannot read ", path)
+                    return (2, 0)
+                },
+            }
+            let parsed = match json::parse(bytes.span()) {
+                Result::Ok(parsed) => parsed,
+                Result::Err(_) => {
+                    println!("FAIL ", path, " is not JSON")
+                    return (2, 0)
+                },
+            }
+            match verify_trie_file(parsed, name, state_root) {
+                Option::Some(slots) => (0, slots),
+                Option::None => (1, 0),
+            }
+        },
+        Option::None => {
+            println!("FAIL mptFixtures entry ", position, " is not a string")
+            (2, 0)
+        },
+    }
+}
