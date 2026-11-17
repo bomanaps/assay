@@ -1,4 +1,5 @@
 const DOCUMENTS = [
+  { file: "deployment.md", title: "Mainnet deployment" },
   { file: "gas.md", title: "Gas benchmarks" },
   { file: "live_log.md", title: "Live verification log" },
   { file: "audit.md", title: "Audit and findings" },

@@ -284,6 +284,18 @@ p.lede { color: var(--muted); max-width: 62ch; margin: 0 0 40px; }
 
 .card.wide { grid-column: span 2; }
 
+.mainnet-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 22px;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.mainnet-line a { color: var(--pass); }
+
 .heartbeat {
   display: inline-flex;
   align-items: center;
