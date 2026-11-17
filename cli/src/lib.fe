@@ -5,6 +5,7 @@ const CHAIN_KIND: String<12> = "beacon_chain"
 const VALIDATOR_KIND: String<16> = "beacon_validator"
 const TRIE_KIND_ACCOUNT: String<7> = "account"
 const TRIE_KIND_STORAGE: String<7> = "storage"
+const VECTOR_KIND: String<11> = "trie_vector"
 
 fn usage() -> i32 uses (out: mut Stdout) {
     println!("usage: assay verify <fixture.json>")
@@ -57,6 +58,9 @@ pub fn main() -> i32 uses (args: Args, fs: Fs, out: mut Stdout) {
     }
     if ingot::input::kind_equals(document, VALIDATOR_KIND) {
         return ingot::validator::verify_validator_file(document)
+    }
+    if ingot::input::kind_equals(document, VECTOR_KIND) {
+        return ingot::vector::verify_vector_file(document)
     }
     if ingot::input::kind_equals(document, TRIE_KIND_ACCOUNT)
         || ingot::input::kind_equals(document, TRIE_KIND_STORAGE) {

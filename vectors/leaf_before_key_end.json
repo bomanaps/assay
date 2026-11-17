@@ -1,0 +1,11 @@
+{
+ "name": "leaf_before_key_end",
+ "kind": "trie_vector",
+ "description": "A leaf that ends before the key is consumed proves a different key, not this one.",
+ "root": "0x07e4e7ff88515d16d0d6010197d8e577070726c228f78f11dc44d3f891fccce5",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xd88220aa94617373617920766563746f722076616c75652041"
+ ],
+ "expect": "key_not_consumed"
+}

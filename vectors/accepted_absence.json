@@ -1,0 +1,11 @@
+{
+ "name": "accepted_absence",
+ "kind": "trie_vector",
+ "description": "An honest absence proof is accepted: the walk ends at a divergence the nodes themselves prove.",
+ "root": "0xfbb0b7b0ec7397c92dabe3d5abb26eccb499ed65bab27158aef20b087c35127e",
+ "key": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "nodes": [
+  "0xf842a01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0a0bef71f60d1431966c6c7a89a95be30412c0c803c122a584c14c58226a16bf502"
+ ],
+ "expect": "absent"
+}

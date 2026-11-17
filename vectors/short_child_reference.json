@@ -1,0 +1,11 @@
+{
+ "name": "short_child_reference",
+ "kind": "trie_vector",
+ "description": "A child reference that is not exactly 32 bytes cannot be a keccak hash and is refused.",
+ "root": "0x434505600fc9f16231382237050cfe38d7ef9ad69e71f183cce0e22cda636bf9",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf0808080808080808080809f679b7eb4302fe3f72987d82163b0a76cd8e1c9437bd441e1c71788b72600cf808080808080"
+ ],
+ "expect": "bad_rlp"
+}

@@ -34,6 +34,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_mpt.py fixtures/*.json
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_ssz.py fixtures/*.json
           "$RUNNER_TEMP/venv/bin/python3" -I tools/synth_trie.py check
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_vectors.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_bench.py check
       - name: Install solc, checked against its SHA-256
@@ -87,6 +88,7 @@ jobs:
           fe build --backend native -O 2 --emit executable --out-dir "$RUNNER_TEMP/cli-out" .
           cd ..
           "$RUNNER_TEMP/venv/bin/python3" -I tools/check_cli.py "$RUNNER_TEMP/cli-out/assay" fixtures
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/run_vectors.py "$RUNNER_TEMP/cli-out/assay"
       - name: Gas benchmark reproduces the committed CSV
         run: |
           fe bench bench --solc "$RUNNER_TEMP/solc-bin/solc" -o "$RUNNER_TEMP/benchout"
