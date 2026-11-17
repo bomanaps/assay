@@ -1,0 +1,60 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "severity": "high",
+      "status": "fixed upstream",
+      "title": "Fe compiler hang: Sonatina GVN never terminates",
+      "body": "A 40-line trie test compiled forever at -O 1 and -O 2 while passing in 30 ms at -O 0 and natively. Reduced to a self-contained reproduction and filed as argotorg/fe#1943; the maintainer confirmed a value-phi oscillation the same morning and fixed it in fe-lang/sonatina#488. The fix ships in Fe v26.6.0, the release this project pins."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "status": "fixed upstream",
+      "title": "Spurious Panic(0x11) after the GVN fix",
+      "body": "With the hang gone, the same test reverted with a checked-arithmetic overflow that no arithmetic in the test could produce: the optimizer dropped a narrowing before a checked subtraction. Reported as a follow-up on argotorg/fe#1943 with a one-command reproduction; also fixed in the Sonatina revision that Fe v26.6.0 pins."
+    },
+    {
+      "id": 3,
+      "severity": "critical",
+      "status": "guarded and tested",
+      "title": "Validator index aliasing forges proofs past the registry limit",
+      "body": "A validator index of 2^40 or more makes the generalized index alias into a real validator's pubkey chunks, so a 54-node branch proves a credential for a validator that does not exist. Found by our own review, reproduced on both backends, and closed: every validator entry point rejects indices at or past the registry limit, and the forgery lives on as a permanent regression test."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "status": "measured and documented",
+      "title": "A truncated proof must never read as absence",
+      "body": "The 2025 proveth-class exploit read a cut-short Merkle-Patricia proof as proof that a slot is zero. Assay rejects the truncation with a distinct error, the bug was injected deliberately and caught by three independent tests, and the absent-account and absent-slot paths are proven end to end against mainnet data."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "status": "handled in tooling",
+      "title": "RPC providers disagree on absent accounts",
+      "body": "geth reports a missing account's storage and code hashes as the empty-trie and empty-code constants; publicnode and Alchemy now report zeros. The capture oracle accepts either convention only when its own trie walk proves the account absent, and four tamper tests pin both halves of that rule."
+    },
+    {
+      "id": 6,
+      "severity": "info",
+      "status": "measured",
+      "title": "std's SSZ hash pair is already optimal on the EVM",
+      "body": "A reviewer estimated that reusing one 64-byte buffer would nearly halve SSZ branch gas. Measured with fe bench, the buffer-reuse variant cost about 200 gas more per level than std::evm::ssz::hash_pair, so the change was reverted and the measurement recorded. Benchmarks beat estimates."
+    },
+    {
+      "id": 7,
+      "severity": "medium",
+      "status": "fixed by own checker",
+      "title": "The CLI failed silently on malformed anchors",
+      "body": "Writing the CLI's 34-check tamper matrix surfaced a bug in the CLI itself: a malformed beacon root failed with the wrong exit code and no message. The taxonomy is now strict, proven refuted and malformed inputs exit 0, 1 and 2, and every check asserts the exact message."
+    },
+    {
+      "id": 8,
+      "severity": "info",
+      "status": "cross-validated",
+      "title": "Byte-for-byte agreement with an independent implementation",
+      "body": "On roughly 2,900 real mainnet account and storage proofs, Assay's verification agrees byte for byte with an independently written verifier in both directions, including every negative verdict, and Assay rejects three non-canonical node shapes that the other implementation accepts."
+    }
+  ]
+}

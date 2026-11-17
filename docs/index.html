@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assay</title>
+<meta name="description" content="Prove Ethereum storage and validator records from the EIP-4788 beacon root, on-chain and natively, in Fe.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">assay<b>.</b></div>
+    <nav class="links">
+      <a href="#live">Live</a>
+      <a href="#how">How</a>
+      <a href="#gas">Gas</a>
+      <a href="#demo">Demo</a>
+      <a href="#findings-section">Findings</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/bomanaps/assay">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <h1>Prove it on-chain.<br><span class="line2">Verify it anywhere.</span></h1>
+      <p class="sub">Assay proves any Ethereum account, storage slot or validator record from the EIP-4788 beacon root alone. One Fe codebase, deployed as a contract and compiled to a native binary, verified against real mainnet data every six hours.</p>
+      <div class="cta-row">
+        <a class="button primary" href="https://github.com/bomanaps/assay">Read the code</a>
+        <a class="button ghost" href="#demo">Run the demo</a>
+      </div>
+    </div>
+    <div class="terminal">
+      <div class="bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">tools/demo_fork.py · mainnet fork · real EIP-4788 contract</span>
+      </div>
+      <pre id="hero-terminal"></pre>
+    </div>
+  </div>
+</div>
+
+<section id="live">
+  <div class="wrap">
+    <p class="kicker">Live verification</p>
+    <h2>Fresh mainnet proofs, every six hours</h2>
+    <p class="lede">A scheduled workflow on GitHub's runners captures a brand-new proof set at the chain head, verifies every proof against the beacon block root with the native CLI, and commits a dated receipt. These numbers only grow while the verifier keeps being right.</p>
+    <div class="heartbeat reveal"><span class="pulse"></span>last verified <span id="last-when">…</span> · beacon slot <span id="last-slot">…</span></div>
+    <div class="bento">
+      <div class="card reveal"><div class="label">verification runs</div><div class="big" id="stat-runs">0</div></div>
+      <div class="card reveal"><div class="label">accounts proven</div><div class="big gold" id="stat-accounts">0</div></div>
+      <div class="card reveal"><div class="label">slots verified</div><div class="big" id="stat-slots">0</div></div>
+      <div class="card wide reveal"><div class="label">runs over time</div><svg id="spark" class="spark" viewBox="0 0 600 72" preserveAspectRatio="none"></svg></div>
+      <div class="card reveal"><div class="label">latest run</div><pre class="readout" id="readout">loading…</pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="scale" hidden>
+  <div class="wrap">
+    <p class="kicker">Proven at scale</p>
+    <h2>Thousands of facts, one trusted root</h2>
+    <p class="lede" id="halo-lede"></p>
+    <div class="halo-wrap">
+      <svg id="halo" viewBox="0 0 760 760" role="img" aria-label="Every proven fact drawn as a tick around the one trusted beacon root"></svg>
+      <div class="halo-center">
+        <div class="halo-count" id="halo-count">0</div>
+        <div class="halo-caption">facts proven</div>
+        <div class="halo-root">1 trusted root · 32 bytes</div>
+      </div>
+    </div>
+    <div class="halo-footer">
+      <div class="halo-legend">
+        <span><i class="swatch gold"></i>contract account</span>
+        <span><i class="swatch green"></i>externally owned account</span>
+        <span><i class="swatch dim"></i>slot proven present</span>
+        <span><i class="swatch hollow"></i>slot proven absent</span>
+      </div>
+      <div class="halo-detail" id="halo-detail">hover a tick for its receipt</div>
+      <div class="halo-meta" id="halo-meta"></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="kicker">How it proves</p>
+    <h2>From one trusted root to any fact</h2>
+    <p class="lede">The only trusted input is the beacon block root the EIP-4788 contract exposes on-chain. Everything below it is verified, hash by hash.</p>
+    <div class="player reveal">
+      <div class="player-chips">
+        <div class="chip"><span class="chip-label">trusted input</span><span class="chip-value" id="chip-trust">—</span></div>
+        <div class="chip"><span class="chip-label">proofs linked</span><span class="chip-value" id="chip-links">0 / 4</span></div>
+        <div class="chip"><span class="chip-label">verdict</span><span class="chip-value" id="chip-verdict">—</span></div>
+      </div>
+      <div class="player-main">
+        <svg id="pipe" viewBox="0 0 640 360" role="img" aria-label="Proof pipeline diagram">
+          <line class="pedge" id="e-call"   x1="140" y1="62"  x2="250" y2="62"></line>
+          <line class="pedge" id="e-ring"   x1="390" y1="62"  x2="480" y2="62"></line>
+          <line class="pedge" id="e-anchor" x1="545" y1="84"  x2="545" y2="150"></line>
+          <line class="pedge" id="e-header" x1="480" y1="172" x2="395" y2="172"></line>
+          <line class="pedge" id="e-ssz"    x1="255" y1="172" x2="160" y2="172"></line>
+          <line class="pedge" id="e-trie"   x1="90"  y1="194" x2="90"  y2="258"></line>
+          <line class="pedge" id="e-out"    x1="160" y1="280" x2="255" y2="280"></line>
+          <g class="pnode" id="n-caller"><rect x="20"  y="40"  width="120" height="44" rx="8"></rect><text x="80"  y="66">caller</text></g>
+          <g class="pnode" id="n-prover"><rect x="250" y="40"  width="140" height="44" rx="8"></rect><text x="320" y="66">BeaconProver</text></g>
+          <g class="pnode" id="n-ring"><rect x="480"  y="40"  width="130" height="44" rx="8"></rect><text x="545" y="66">4788 ring buffer</text></g>
+          <g class="pnode" id="n-header"><rect x="480" y="150" width="130" height="44" rx="8"></rect><text x="545" y="176">beacon header</text></g>
+          <g class="pnode" id="n-ssz"><rect x="255"  y="150" width="140" height="44" rx="8"></rect><text x="325" y="176">SSZ branch</text></g>
+          <g class="pnode" id="n-trie"><rect x="20"  y="150" width="140" height="44" rx="8"></rect><text x="90"  y="176">account trie</text></g>
+          <g class="pnode" id="n-slot"><rect x="20"  y="258" width="140" height="44" rx="8"></rect><text x="90"  y="284">storage slot</text></g>
+          <g class="pnode" id="n-verdict"><rect x="255" y="258" width="355" height="44" rx="8"></rect><text x="432" y="284" id="n-verdict-text">verdict</text></g>
+        </svg>
+        <div class="player-side">
+          <div class="step-kicker" id="p-kicker">step 1 of 7</div>
+          <h3 id="p-title"></h3>
+          <p id="p-text"></p>
+          <ul class="changed" id="p-changed"></ul>
+          <div class="player-nav">
+            <button class="pbtn" id="p-back" type="button">← Back</button>
+            <button class="pbtn primary" id="p-next" type="button">Next →</button>
+            <button class="pbtn ghost" id="p-replay" type="button">↺ Replay</button>
+          </div>
+          <div class="player-dots" id="p-dots"></div>
+          <div class="kbd-hint">← → step · R replay</div>
+          <div class="kbd-hint">illustration of the verifier's checks · real executions: <a href="#live">Live</a> and <a href="#demo">Demo</a></div>
+        </div>
+      </div>
+    </div>
+    <p class="lede">The same walk runs as an 8 KB contract other contracts call and as a native binary on the same files, from one Fe codebase. The gindex table is computed by <code>const fn</code> and pinned by <code>static_assert</code>, so a wrong beacon layout is a compile error, not a runtime surprise.</p>
+    <div class="binary-divider">0110000101110011011100110110000101111001 0110000101110011011100110110000101111001 0110000101110011011100110110000101111001</div>
+  </div>
+</section>
+
+<section id="gas">
+  <div class="wrap">
+    <p class="kicker">Gas</p>
+    <h2>Measured, reproduced, enforced</h2>
+    <p class="lede">Benchmarked with the compiler's own harness against vendored, hash-pinned Solidity verifiers. CI re-runs the whole benchmark and fails if a single gas value drifts; everything below is read from the <a href="gas_benchmark.csv">committed CSV</a>.</p>
+    <div class="player-chips gas-chips reveal">
+      <div class="chip"><span class="chip-label">cheapest verify</span><span class="chip-value good" id="gchip-best">…</span></div>
+      <div class="chip"><span class="chip-label">fixtures</span><span class="chip-value" id="gchip-count">…</span></div>
+      <div class="chip"><span class="chip-label">drift gate</span><span class="chip-value gold">CI-enforced</span></div>
+    </div>
+    <div class="gas-groups reveal" id="gas-groups"></div>
+    <div class="callout reveal">
+      <div class="callout-kicker">good to know</div>
+      <p>The Merkle-Patricia rows are pure EVM computation, where the compiler's codegen decides the bill, and Fe's walk comes out 3.2x to 3.4x cheaper on the same mainnet proofs. The SSZ rows spend most of their gas in the SHA-256 precompile, which costs the same whoever calls it, so they sit near parity and belong on the board anyway.</p>
+    </div>
+    <div class="costbox reveal">
+      <div class="costbox-head">
+        <h3>What a proof costs on-chain</h3>
+        <label class="gwei-label" for="gwei">gas price <input id="gwei" type="number" min="0" step="0.1" value="1" inputmode="decimal"> gwei <span class="live-tag" id="gwei-live" hidden title="current mainnet gas price, fetched read-only from a public RPC">live</span></label>
+      </div>
+      <div class="costbox-rows" id="cost-rows"></div>
+      <p class="costbox-note">End-to-end measurements at -O 2 from the committed benchmark: one call proving a live USDC slot from the beacon root, and one proving a whole validator record.</p>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <p class="kicker">Transcripts &amp; demo</p>
+    <h2>Watch it refuse to be fooled</h2>
+    <p class="lede">Real transcripts from the committed tools. The fork demo captures a fresh mainnet proof, deploys the contract on an anvil fork against the genuine EIP-4788 contract, proves live USDC storage, and then flips one branch word to show the same call revert. Anyone can rerun both.</p>
+    <div class="tabs">
+      <button class="tab active" data-src="transcripts/cli.txt">assay verify</button>
+      <button class="tab" data-src="transcripts/fork.txt">mainnet fork demo</button>
+    </div>
+    <div class="terminal reveal">
+      <div class="bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">real output · unedited</span>
+      </div>
+      <pre id="tab-terminal"></pre>
+    </div>
+    <div class="runit reveal">
+      <div class="runit-head">
+        <h3>Run it on your machine</h3>
+        <button class="copy" id="copy-run" type="button">copy</button>
+      </div>
+      <p class="runit-note">Needs the <a href="https://github.com/argotorg/fe/releases/tag/v26.6.0">Fe v26.6.0 release binary</a> on your PATH (or pointed to by <code>FE=</code>), <a href="https://getfoundry.sh">Foundry</a> for anvil and cast, and Python 3. It captures at the live chain head, so every run proves a different block; nothing in the repository is modified.</p>
+      <pre id="run-commands">git clone https://github.com/bomanaps/assay && cd assay
+python3 -m venv .venv && .venv/bin/pip install -r tools/requirements-capture.txt
+.venv/bin/python3 tools/demo_fork.py</pre>
+    </div>
+  </div>
+</section>
+
+<section id="findings-section">
+  <div class="wrap">
+    <p class="kicker">Audit &amp; findings</p>
+    <h2>What breaking it taught us</h2>
+    <p class="lede">Every claim here survived deliberate attack: roughly a hundred injected bugs across the verifiers, contract and tooling, four independent reviews, and anchoring against the official Ethereum test vectors and reference implementations. These are the findings that fell out.</p>
+    <div class="findings" id="findings"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="badge-wall">
+      <a href="https://github.com/bomanaps/assay/actions/workflows/ci.yml"><img src="https://github.com/bomanaps/assay/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+      <a href="https://github.com/bomanaps/assay/actions/workflows/live.yml"><img src="https://github.com/bomanaps/assay/actions/workflows/live.yml/badge.svg" alt="Live verification"></a>
+    </div>
+    <p class="readout">Assay · a Fe Builders Challenge 2026 entry · Apache-2.0 · <a href="https://github.com/bomanaps/assay">github.com/bomanaps/assay</a></p>
+  </div>
+  <div class="marquee">
+    <div class="track">
+      <span>Fe</span><span class="star">✦</span><span>EIP-4788</span><span class="star">✦</span><span>SSZ</span><span class="star">✦</span><span>Merkle-Patricia</span><span class="star">✦</span><span>const fn gindices</span><span class="star">✦</span><span>EVM + native</span><span class="star">✦</span><span>mainnet proven</span><span class="star">✦</span>
+      <span>Fe</span><span class="star">✦</span><span>EIP-4788</span><span class="star">✦</span><span>SSZ</span><span class="star">✦</span><span>Merkle-Patricia</span><span class="star">✦</span><span>const fn gindices</span><span class="star">✦</span><span>EVM + native</span><span class="star">✦</span><span>mainnet proven</span><span class="star">✦</span>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

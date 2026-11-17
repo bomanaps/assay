@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assay Docs</title>
+<meta name="description" content="The committed documentation of Assay, rendered from the repository's own files.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><a href="index.html">assay<b>.</b></a></div>
+    <nav class="links">
+      <a href="index.html#live">Live</a>
+      <a href="index.html#how">How</a>
+      <a href="index.html#gas">Gas</a>
+      <a href="index.html#demo">Demo</a>
+      <a href="docs.html" class="here">Docs</a>
+      <a href="https://github.com/bomanaps/assay">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="docs-layout wrap">
+  <aside class="docs-side">
+    <p class="kicker">Documents</p>
+    <nav class="docs-list" id="docs-list"></nav>
+    <p class="docs-note">Every page here is rendered from a file committed in the repository, unchanged.</p>
+  </aside>
+  <article class="mddoc" id="doc-body">
+    <p class="docs-loading">loading…</p>
+  </article>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="docs.js"></script>
+</body>
+</html>

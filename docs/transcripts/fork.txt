@@ -1,0 +1,14 @@
+$ python3 tools/demo_fork.py
+== capturing a fresh proof set at the chain head
+   beacon slot 15672946, block root 0xedf0878c353de162e1eb831ff7c310fe23816d076601dbb4dea25aeb8c964a52
+   4788 key: timestamp 1794899387 of execution block 26433180
+== building BeaconProver with the pinned Fe release
+   fe 26.6.0 (5b3f96a)
+== forking mainnet at block 26433180 (the 4788 key block)
+ok   the genuine 4788 ring buffer holds our beacon root: 0xedf0878c353de162e1eb831ff7c310fe23816d076601dbb4dea25aeb8c964a52
+ok   BeaconProver deployed at 0xb1e2eb83cffb41df240c74ce66b36fbd79841346, pointed at the real 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02
+ok   proveStorage returned USDC slot 0 = 1442626706025541066953462928744535818996053290554 at beacon slot 15672946
+ok   the same call with one branch word flipped reverts
+
+verified: live mainnet storage proven on-chain from the beacon root alone,
+through the genuine EIP-4788 contract, on a fork anyone can recreate
