@@ -1,0 +1,54 @@
+name: Live
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live
+  cancel-in-progress: false
+
+env:
+  FE_VERSION: v26.6.0
+  FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
+
+jobs:
+  verify-fresh-mainnet-proofs:
+    if: github.repository == 'bomanaps/assay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+      - name: Install Fe from the release, checked against its SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/fe-bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe-bin/fe" "https://github.com/argotorg/fe/releases/download/$FE_VERSION/fe_linux_amd64"
+          echo "$FE_SHA256  $RUNNER_TEMP/fe-bin/fe" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/fe-bin/fe"
+          echo "$RUNNER_TEMP/fe-bin" >> "$GITHUB_PATH"
+      - name: Build the CLI
+        run: |
+          cd cli
+          fe build --backend native -O 2 --emit executable --out-dir "$RUNNER_TEMP/cli-out" .
+      - name: Capture fresh proofs at the mainnet head and verify them
+        env:
+          RPC_URL: ${{ secrets.RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
+          BEACON_URL: ${{ secrets.BEACON_URL || 'https://ethereum-beacon-api.publicnode.com' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -r tools/requirements-capture.txt
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/live_verify.py "$RUNNER_TEMP/cli-out/assay"
+      - name: Commit the receipt
+        run: |
+          git config user.name "live-verification"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/live_log.md docs/live_stats.json
+          git commit -m "Live: fresh mainnet proofs verified from the beacon root"
+          git pull --rebase origin main
+          git push origin HEAD:main
