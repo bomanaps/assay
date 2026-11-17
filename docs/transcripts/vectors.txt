@@ -1,0 +1,17 @@
+$ python3 tools/run_vectors.py out/assay
+12 vector files match the generator
+ok   accepted_absence: absence proven
+ok   accepted_inclusion: inclusion proven, value bound exactly
+ok   branch_value_on_path: rejected (branch_value_on_path)
+ok   empty_extension: rejected (bad_rlp)
+ok   flipped_byte: rejected (hash_mismatch)
+ok   hexprefix_padding: rejected (bad_hex_prefix)
+ok   leaf_before_key_end: rejected (key_not_consumed)
+ok   overlong_path: rejected (bad_rlp)
+ok   oversized_inline_node: rejected (bad_rlp)
+ok   short_child_reference: rejected (bad_rlp)
+ok   trailing_nodes: rejected (trailing_nodes)
+ok   truncated_proof: rejected (path_exhausted)
+ok   self-test: a vector lying about its expectation is refused
+ok   self-test: a vector without an expectation is refused
+all 12 vectors behaved exactly as committed

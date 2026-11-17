@@ -1,0 +1,11 @@
+{
+ "name": "hexprefix_padding",
+ "kind": "trie_vector",
+ "description": "An even-length hex-prefix path with a nonzero padding nibble is non-canonical and refused.",
+ "root": "0xd611ce0a054c66d521f059998b7132fd48e5beea7c978cdff3392c45ae60bd1f",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf6a021aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0194617373617920766563746f722076616c75652041"
+ ],
+ "expect": "bad_hex_prefix"
+}

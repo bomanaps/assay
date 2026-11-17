@@ -1,0 +1,13 @@
+{
+ "name": "trailing_nodes",
+ "kind": "trie_vector",
+ "description": "Nodes after the terminal node are refused; padding a proof must not change its meaning.",
+ "root": "0xfbb0b7b0ec7397c92dabe3d5abb26eccb499ed65bab27158aef20b087c35127e",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf842a01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0a0bef71f60d1431966c6c7a89a95be30412c0c803c122a584c14c58226a16bf502",
+  "0xf83d80d62094617373617920766563746f722076616c75652041d62094617373617920766563746f722076616c756520428080808080808080808080808080",
+  "0xf83d80d62094617373617920766563746f722076616c75652041d62094617373617920766563746f722076616c756520428080808080808080808080808080"
+ ],
+ "expect": "trailing_nodes"
+}

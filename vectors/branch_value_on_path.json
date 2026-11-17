@@ -1,0 +1,11 @@
+{
+ "name": "branch_value_on_path",
+ "kind": "trie_vector",
+ "description": "A branch that stores a value while the key continues past it is refused.",
+ "root": "0x23ebc66a70ef188650817049f84f74ce6485ee65caf1c44466e6c2a7b09ebd73",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf84580808080808080808080a0679b7eb4302fe3f72987d82163b0a76cd8e1c9437bd441e1c71788b72600cfa9808080808094617373617920766563746f722076616c75652041"
+ ],
+ "expect": "branch_value_on_path"
+}

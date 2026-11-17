@@ -55,6 +55,13 @@
       "status": "cross-validated",
       "title": "Byte-for-byte agreement with an independent implementation",
       "body": "On roughly 2,900 real mainnet account and storage proofs, Assay's verification agrees byte for byte with an independently written verifier in both directions, including every negative verdict, and Assay rejects three non-canonical node shapes that the other implementation accepts."
+    },
+    {
+      "id": 9,
+      "severity": "info",
+      "status": "one command to rerun",
+      "title": "Twelve committed attack vectors, every rejection named",
+      "body": "The malformed-proof shapes behind these findings live in the repository as twelve committed vectors: ten attacks the verifier must reject for the exact stated reason, two honest proofs it must accept. One command replays them all, and one vector is documented as a genuine inclusion under lenient decoding that Assay still refuses, because canonical Ethereum never emits it. A vector that lies about its expectation fails the run."
     }
   ]
 }

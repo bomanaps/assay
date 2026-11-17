@@ -1,0 +1,12 @@
+{
+ "name": "oversized_inline_node",
+ "kind": "trie_vector",
+ "description": "An embedded child large enough to hold a hash reference: a lenient decoder reads it as a valid inclusion, canonical Ethereum never emits it, and Assay refuses it outright.",
+ "root": "0x88b7a45717a28623363f982d2b132f15837c9fe2edb851022ae9760cb5c98237",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf84c80808080808080808080f83aa03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0198787878787878787878787878787878787878787878787878808080808080"
+ ],
+ "expect": "bad_rlp",
+ "lenientReading": "inclusion"
+}

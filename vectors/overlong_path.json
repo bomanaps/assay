@@ -1,0 +1,11 @@
+{
+ "name": "overlong_path",
+ "kind": "trie_vector",
+ "description": "A leaf path longer than the remaining key is refused instead of being silently clipped.",
+ "root": "0xbb9b433348c008c31cdea61ac4d63d36f5703862b661804dd734664022f0040b",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xf838a220aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01cc94617373617920766563746f722076616c75652041"
+ ],
+ "expect": "bad_rlp"
+}

@@ -1,0 +1,11 @@
+{
+ "name": "empty_extension",
+ "kind": "trie_vector",
+ "description": "An extension with an empty path adds no key material and is refused.",
+ "root": "0xfd3265665e8cb65cf1865df43b030346708045107d0db5311e62cc871da24a89",
+ "key": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01",
+ "nodes": [
+  "0xe200a0679b7eb4302fe3f72987d82163b0a76cd8e1c9437bd441e1c71788b72600cfa9"
+ ],
+ "expect": "bad_rlp"
+}

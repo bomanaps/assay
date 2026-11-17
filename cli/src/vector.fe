@@ -1,0 +1,211 @@
+use core::MemSpan
+use json::Value
+use std::io::Stdout
+use verifier::{verify_trie, NodeList, ProofError, Proven, Root, TrieKey}
+use ingot::input::{parse_hex_blob, string_field, word_field}
+
+fn error_matches(_ error: ProofError, _ expect: MemSpan) -> bool {
+    match error {
+        ProofError::BadRlp => expect == "bad_rlp",
+        ProofError::HashMismatch(_) => expect == "hash_mismatch",
+        ProofError::PathExhausted => expect == "path_exhausted",
+        ProofError::TrailingNodes => expect == "trailing_nodes",
+        ProofError::BadHexPrefix => expect == "bad_hex_prefix",
+        ProofError::BranchValueOnPath => expect == "branch_value_on_path",
+        ProofError::KeyNotConsumed => expect == "key_not_consumed",
+        ProofError::DepthOutOfRange => expect == "depth_out_of_range",
+        ProofError::RootMismatch => expect == "root_mismatch",
+        ProofError::IndexOutOfRange => expect == "index_out_of_range",
+        ProofError::WrongLength => expect == "wrong_length",
+    }
+}
+
+fn print_error_name(_ error: ProofError) uses (out: mut Stdout) {
+    match error {
+        ProofError::BadRlp => {
+            println!("bad_rlp")
+        },
+        ProofError::HashMismatch(depth) => {
+            println!("hash_mismatch at node ", depth)
+        },
+        ProofError::PathExhausted => {
+            println!("path_exhausted")
+        },
+        ProofError::TrailingNodes => {
+            println!("trailing_nodes")
+        },
+        ProofError::BadHexPrefix => {
+            println!("bad_hex_prefix")
+        },
+        ProofError::BranchValueOnPath => {
+            println!("branch_value_on_path")
+        },
+        ProofError::KeyNotConsumed => {
+            println!("key_not_consumed")
+        },
+        ProofError::DepthOutOfRange => {
+            println!("depth_out_of_range")
+        },
+        ProofError::RootMismatch => {
+            println!("root_mismatch")
+        },
+        ProofError::IndexOutOfRange => {
+            println!("index_out_of_range")
+        },
+        ProofError::WrongLength => {
+            println!("wrong_length")
+        },
+    }
+}
+
+fn vector_nodes(_ document: Value) -> Option<NodeList> {
+    if document.get("nodes").is_none() {
+        return Option::None
+    }
+    match document["nodes"] {
+        Value::Array(ref items) => {
+            var list = NodeList::new()
+            var i: usize = 0
+            while i < items.len() {
+                let bytes = parse_hex_blob(items[i].as_string()?)?
+                list.push(bytes.span())
+                i += 1
+            }
+            Option::Some(list)
+        },
+        _ => Option::None,
+    }
+}
+
+fn claimed_value_matches(_ document: Value, _ payload: MemSpan) -> Option<bool> {
+    let text = string_field(document, "value")?
+    let bytes = parse_hex_blob(text)?
+    Option::Some(bytes.span() == payload)
+}
+
+pub fn verify_vector_file(_ document: Value) -> i32 uses (out: mut Stdout) {
+    match string_field(document, "name") {
+        Option::Some(ref name) => verify_named_vector(document, name),
+        Option::None => {
+            println!("FAIL the vector names no name")
+            2
+        },
+    }
+}
+
+fn verify_named_vector(_ document: Value, _ name: MemSpan) -> i32
+uses (out: mut Stdout)
+{
+    let root = match word_field(document, "root") {
+        Option::Some(root) => root,
+        Option::None => {
+            println!("FAIL ", name, ": malformed root")
+            return 2
+        },
+    }
+    let key = match word_field(document, "key") {
+        Option::Some(key) => key,
+        Option::None => {
+            println!("FAIL ", name, ": malformed key")
+            return 2
+        },
+    }
+    let nodes = match vector_nodes(document) {
+        Option::Some(nodes) => nodes,
+        Option::None => {
+            println!("FAIL ", name, ": malformed nodes")
+            return 2
+        },
+    }
+    match string_field(document, "expect") {
+        Option::Some(ref expect) => verify_expectation(document, name, expect, root, key, nodes),
+        Option::None => {
+            println!("FAIL ", name, ": the vector states no expectation")
+            2
+        },
+    }
+}
+
+fn verify_expectation(
+    _ document: Value,
+    _ name: MemSpan,
+    _ expect: MemSpan,
+    root: u256,
+    key: u256,
+    nodes: NodeList,
+) -> i32
+uses (out: mut Stdout)
+{
+    let outcome = verify_trie(root: Root::new(root), key: TrieKey::new(key), nodes)
+    if expect == "present" {
+        match outcome {
+            Result::Ok(Proven::Present(leaf)) => {
+                let matches = claimed_value_matches(
+                    document,
+                    leaf.item.payload(nodes.node(leaf.node)),
+                )
+                if matches != Option::Some(true) {
+                    println!(
+                        "FAIL ",
+                        name,
+                        ": proven value differs from the vector's claim",
+                    )
+                    return 1
+                }
+                println!("ok   ", name, ": inclusion proven, value bound exactly")
+                return 0
+            },
+            _ => {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": an honest inclusion proof was not accepted",
+                )
+                return 1
+            },
+        }
+    }
+    if expect == "absent" {
+        match outcome {
+            Result::Ok(Proven::Absent) => {
+                println!("ok   ", name, ": absence proven")
+                return 0
+            },
+            _ => {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": an honest absence proof was not accepted",
+                )
+                return 1
+            },
+        }
+    }
+    match outcome {
+        Result::Ok(_) => {
+            println!(
+                "FAIL ",
+                name,
+                ": the verifier ACCEPTED a proof that must be rejected as ",
+                expect,
+            )
+            1
+        },
+        Result::Err(error) => {
+            if error_matches(error, expect) {
+                println!("ok   ", name, ": rejected (", expect, ")")
+                0
+            } else {
+                print!(
+                    "FAIL ",
+                    name,
+                    ": rejected for the wrong reason, expected ",
+                    expect,
+                    ", got ",
+                )
+                print_error_name(error)
+                1
+            }
+        },
+    }
+}
