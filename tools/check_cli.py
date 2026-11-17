@@ -42,6 +42,10 @@ CHAIN_TAMPERS = [
     ("short branch", 1, "branch does not reach", lambda f: proof(f, "execution_payload.block_hash")["branch"].pop()),
     ("uppercase root hex", 2, "not canonical hex", lambda f: f["beacon"].update(blockRoot="0x" + f["beacon"]["blockRoot"][2:].upper())),
     ("kind", 2, "unknown fixture kind", lambda f: f.update(kind="beacon_blob")),
+    ("receipts root branch word", 1, "branch does not reach", lambda f: proof(f, "execution_payload.receipts_root")["branch"].__setitem__(3, flip(proof(f, "execution_payload.receipts_root")["branch"][3]))),
+    ("receipts root header claim", 1, "does not match the execution header's claim", lambda f: f["execution"]["header"].update(receiptsRoot=flip(f["execution"]["header"]["receiptsRoot"]))),
+    ("empty receipt links", 2, "links no receipt fixtures", lambda f: f["execution"].update(receiptFixtures=[])),
+    ("receipt traversal name", 2, "not a plain fixture name", lambda f: f["execution"].update(receiptFixtures=["../chain_receipt_logged"])),
 ]
 
 VALIDATOR_TAMPERS = [
@@ -102,6 +106,8 @@ def main(argv):
         linked = json.loads((fixtures / "chain_beacon.json").read_text())
         for trie in linked["execution"]["mptFixtures"]:
             shutil.copy(fixtures / f"{trie}.json", scratch / f"{trie}.json")
+        for receipt_name in linked["execution"].get("receiptFixtures", []):
+            shutil.copy(fixtures / f"{receipt_name}.json", scratch / f"{receipt_name}.json")
         original = json.loads((fixtures / "chain_beacon.json").read_text())
         for label, expected_code, needle, tamper in CHAIN_TAMPERS:
             tampered = copy.deepcopy(original)
@@ -124,6 +130,28 @@ def main(argv):
         slot_value.write_text(json.dumps(missing))
         code, output = run(binary, slot_value)
         expect("chain missing linked file", 2, "cannot read", code, output, failures)
+        slot_value.write_text(json.dumps(original))
+        logged_path = scratch / "chain_receipt_logged.json"
+        logged_original = json.loads((fixtures / "chain_receipt_logged.json").read_text())
+        receipt_file_tampers = [
+            ("receipt log count claim", 1, "disagrees with the file's claims", lambda f: f["receipt"].update(logCount=hex(int(f["receipt"]["logCount"], 16) + 1))),
+            ("receipt topic claim", 1, "disagrees with the file", lambda f: f["log"]["topics"].__setitem__(0, flip(f["log"]["topics"][0]))),
+            ("receipt proof node", 1, "receipt proof rejected", lambda f: f["proof"].__setitem__(len(f["proof"]) - 1, flip(f["proof"][len(f["proof"]) - 1]))),
+            ("receipt claims removed", 1, "the file claims none", lambda f: (f.pop("receipt"), f.pop("log"))),
+            ("receipt foreign root", 1, "captured at a different receipts root", lambda f: f["header"].update(receiptsRoot=flip(f["header"]["receiptsRoot"]))),
+        ]
+        for label, expected_code, needle, tamper in receipt_file_tampers:
+            tampered_receipt = copy.deepcopy(logged_original)
+            tamper(tampered_receipt)
+            logged_path.write_text(json.dumps(tampered_receipt))
+            code, output = run(binary, slot_value)
+            expect(f"chain {label}", expected_code, needle, code, output, failures)
+        shutil.copy(fixtures / "chain_receipt_logged.json", logged_path)
+        missing_receipt = copy.deepcopy(original)
+        missing_receipt["execution"]["receiptFixtures"].append("chain_receipt_gone")
+        slot_value.write_text(json.dumps(missing_receipt))
+        code, output = run(binary, slot_value)
+        expect("chain missing receipt file", 2, "cannot read", code, output, failures)
         original_validator = json.loads((fixtures / "validator_beacon.json").read_text())
         for label, expected_code, needle, tamper in VALIDATOR_TAMPERS:
             tampered = copy.deepcopy(original_validator)

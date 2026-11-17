@@ -843,7 +843,10 @@ class Generator(unittest.TestCase):
             gen_fixtures.STATE_PROOFS.update(saved)
 
     def test_unknown_kind_is_refused(self):
-        self.refuses(self.edit("mainnet_account_eoa", lambda f: f.update(kind="receipt")), "unknown fixture kind")
+        self.refuses(self.edit("mainnet_account_eoa", lambda f: f.update(kind="voucher")), "unknown fixture kind")
+
+    def test_an_account_fixture_relabeled_receipt_is_refused(self):
+        self.refuses(self.edit("mainnet_account_eoa", lambda f: f.update(kind="receipt")), "ReceiptError")
 
     def test_name_must_match_the_file(self):
         self.refuses(self.edit("mainnet_account_eoa", lambda f: f.update(name="other")), "holds fixture named other")

@@ -1,0 +1,259 @@
+use core::MemSpan
+use std::evm::crypto::keccak256
+use std::evm::rlp::{self, Item}
+use ingot::mpt::{verify_trie, ProofNodes, HASH_LEN}
+use ingot::{ProofError, Proven, ReceiptsRoot, TrieKey}
+
+pub const RECEIPT_FIELDS: usize = 4
+pub const LOG_FIELDS: usize = 3
+pub const BLOOM_LEN: usize = 256
+pub const MAX_TOPICS: usize = 4
+pub const ADDRESS_LEN: usize = 20
+pub const MAX_TX_TYPE: u8 = 4
+
+pub struct ReceiptSummary {
+    pub tx_type: u8,
+    pub succeeded: bool,
+    pub cumulative_gas: u64,
+    pub log_count: usize,
+}
+
+impl Copy for ReceiptSummary {}
+
+pub struct LogClaim {
+    pub address: u256,
+    pub topic_count: usize,
+    pub topics: [u256; MAX_TOPICS],
+    pub data_hash: u256,
+    pub data_len: usize,
+}
+
+impl Copy for LogClaim {}
+
+pub fn receipt_key(_ index: u64) -> TrieKey {
+    if index == 0 {
+        return TrieKey::short(0x80 << 248, 2)
+    }
+    if index < 0x80 {
+        return TrieKey::short((index as u256) << 248, 2)
+    }
+    var length: usize = 0
+    var remaining = index
+    while remaining > 0 {
+        remaining >>= 8
+        length += 1
+    }
+    let prefix = ((0x80 + length) as u256) << 248
+    let payload = (index as u256) << ((248 - 8 * length) as u256)
+    TrieKey::short(prefix | payload, 2 * (length + 1))
+}
+
+fn typed_offset(_ value: MemSpan) -> Result<ProofError, (usize, u8)> {
+    if value.len() == 0 {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let first = value.byte_at(0)
+    if first >= 0xc0 {
+        return Result::Ok((0, 0))
+    }
+    if first >= 1 && first <= MAX_TX_TYPE {
+        return Result::Ok((1, first))
+    }
+    Result::Err(ProofError::BadRlp)
+}
+
+fn status_flag(_ item: Item, _ encoded: MemSpan) -> Result<ProofError, bool> {
+    if item.is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let bytes = item.payload(encoded)
+    if bytes.len() == 0 {
+        return Result::Ok(false)
+    }
+    if bytes.len() == 1 && bytes.byte_at(0) == 1 {
+        return Result::Ok(true)
+    }
+    Result::Err(ProofError::BadRlp)
+}
+
+pub fn decode_receipt_summary(_ value: MemSpan) -> Result<ProofError, ReceiptSummary> {
+    let (skip, tx_type) = typed_offset(value)?
+    let inner = value.slice(offset: skip, len: value.len() - skip)
+    let item = match rlp::decode(inner) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if !item.is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let fields = match item.items(inner) {
+        Option::Some(fields) => fields,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if fields.len() != RECEIPT_FIELDS {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let succeeded = status_flag(fields[0], inner)?
+    let cumulative = match fields[1].as_uint(inner) {
+        Option::Some(cumulative) => cumulative,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let cumulative_gas: u64 = match cumulative.downcast() {
+        Option::Some(cumulative_gas) => cumulative_gas,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if fields[2].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    if fields[2].payload(inner).len() != BLOOM_LEN {
+        return Result::Err(ProofError::WrongLength)
+    }
+    if !fields[3].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let logs = match fields[3].items(inner) {
+        Option::Some(logs) => logs,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    Result::Ok(
+        ReceiptSummary { tx_type, succeeded, cumulative_gas, log_count: logs.len() },
+    )
+}
+
+pub fn decode_receipt_log(_ value: MemSpan, _ log_index: usize) -> Result<ProofError, LogClaim> {
+    let (skip, _) = typed_offset(value)?
+    let inner = value.slice(offset: skip, len: value.len() - skip)
+    let item = match rlp::decode(inner) {
+        Option::Some(item) => item,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    let fields = match item.items(inner) {
+        Option::Some(fields) => fields,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if fields.len() != RECEIPT_FIELDS || !fields[3].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let logs = match fields[3].items(inner) {
+        Option::Some(logs) => logs,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if log_index >= logs.len() {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    if !logs[log_index].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let parts = match logs[log_index].items(inner) {
+        Option::Some(parts) => parts,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if parts.len() != LOG_FIELDS {
+        return Result::Err(ProofError::BadRlp)
+    }
+    if parts[0].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let address_bytes = parts[0].payload(inner)
+    if address_bytes.len() != ADDRESS_LEN {
+        return Result::Err(ProofError::WrongLength)
+    }
+    var address: u256 = 0
+    var i: usize = 0
+    while i < ADDRESS_LEN {
+        address = (address << 8) | (address_bytes.byte_at(i) as u256)
+        i += 1
+    }
+    if !parts[1].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let topic_items = match parts[1].items(inner) {
+        Option::Some(topic_items) => topic_items,
+        Option::None => {
+            return Result::Err(ProofError::BadRlp)
+        },
+    }
+    if topic_items.len() > MAX_TOPICS {
+        return Result::Err(ProofError::BadRlp)
+    }
+    var topics: [u256; MAX_TOPICS] = [0; MAX_TOPICS]
+    var topic: usize = 0
+    while topic < topic_items.len() {
+        if topic_items[topic].is_list() {
+            return Result::Err(ProofError::BadRlp)
+        }
+        let bytes = topic_items[topic].payload(inner)
+        if bytes.len() != HASH_LEN {
+            return Result::Err(ProofError::WrongLength)
+        }
+        topics[topic] = bytes.read_word(0)
+        topic += 1
+    }
+    if parts[2].is_list() {
+        return Result::Err(ProofError::BadRlp)
+    }
+    let data = parts[2].payload(inner)
+    Result::Ok(
+        LogClaim {
+            address,
+            topic_count: topic_items.len(),
+            topics,
+            data_hash: keccak256(data),
+            data_len: data.len(),
+        },
+    )
+}
+
+pub fn verify_receipt<P: ProofNodes>(receipts_root: ReceiptsRoot, _ index: u64, nodes: P) -> Result<
+    ProofError,
+    Proven<ReceiptSummary>,
+> {
+    match verify_trie(
+        root: receipts_root.as_root(),
+        key: receipt_key(index),
+        nodes,
+    )? {
+        Proven::Present(leaf) => {
+            let summary = decode_receipt_summary(leaf.item.payload(nodes.node(leaf.node)))?
+            Result::Ok(Proven::Present(summary))
+        },
+        Proven::Absent => Result::Ok(Proven::Absent),
+    }
+}
+
+pub fn verify_log<P: ProofNodes>(
+    receipts_root: ReceiptsRoot,
+    _ index: u64,
+    log_index: usize,
+    nodes: P,
+) -> Result<ProofError, Proven<LogClaim>> {
+    match verify_trie(
+        root: receipts_root.as_root(),
+        key: receipt_key(index),
+        nodes,
+    )? {
+        Proven::Present(leaf) => {
+            let claim = decode_receipt_log(leaf.item.payload(nodes.node(leaf.node)), log_index)?
+            Result::Ok(Proven::Present(claim))
+        },
+        Proven::Absent => Result::Ok(Proven::Absent),
+    }
+}

@@ -160,8 +160,8 @@ const PLAYER_STEPS = [
   },
   {
     title: "Trie walks prove account and slot",
-    text: "Under that state root, canonical-only RLP trie walks prove the account, then the storage slot, every node bound by its keccak hash. Absence is proven the same way, so a cut-short proof can never read as zero.",
-    changed: ["+ account proven", "+ slot value proven", "non-canonical nodes rejected"],
+    text: "Under that state root, canonical-only RLP trie walks prove the account, then the storage slot, every node bound by its keccak hash. The same walk with variable-length keys proves receipts and event logs under the block's receipts root, and absence is proven the same way, so a cut-short proof can never read as zero.",
+    changed: ["+ account proven", "+ slot value proven", "+ receipts and logs provable", "non-canonical nodes rejected"],
     trust: "32 bytes", links: 4, verdict: "—",
     active: { nodes: ["n-trie", "n-slot"], edges: ["e-ssz", "e-trie"] }, done: { nodes: ["n-caller", "n-prover", "n-ring", "n-header", "n-ssz"], edges: ["e-call", "e-ring", "e-anchor", "e-header"] }
   },
@@ -271,8 +271,8 @@ const FIXTURE_NOTES = {
 };
 
 const END_TO_END = [
-  { name: "proveStorage", gas: 449208, detail: "live USDC slot from the beacon root" },
-  { name: "proveValidator", gas: 38417, detail: "whole validator record" }
+  { name: "proveStorage", gas: 450267, detail: "live USDC slot from the beacon root" },
+  { name: "proveValidator", gas: 38158, detail: "whole validator record" }
 ];
 
 async function loadGas() {

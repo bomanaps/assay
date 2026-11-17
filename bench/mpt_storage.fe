@@ -88,6 +88,31 @@ impl StorageRoot {
     }
 }
 
+pub struct ReceiptsRoot(u256)
+
+impl Copy for ReceiptsRoot {}
+impl Snapshot for ReceiptsRoot {}
+
+impl Eq for ReceiptsRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl ReceiptsRoot {
+    pub const fn new(_ value: u256) -> Self {
+        ReceiptsRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
 pub struct CodeHash(u256)
 
 impl Copy for CodeHash {}
@@ -159,24 +184,38 @@ impl GIndex {
     }
 }
 
-pub struct TrieKey(u256)
+pub struct TrieKey { word: u256, key_nibbles: usize }
 
 impl Copy for TrieKey {}
 impl Snapshot for TrieKey {}
 
 impl Eq for TrieKey {
     const fn eq(self, _ other: Self) -> bool {
-        self.0 == other.0
+        self.word == other.word && self.key_nibbles == other.key_nibbles
     }
 }
 
 impl TrieKey {
     pub const fn new(_ value: u256) -> Self {
-        TrieKey(value)
+        TrieKey { word: value, key_nibbles: 64 }
+    }
+
+    pub fn short(_ word: u256, _ nibbles: usize) -> Self {
+        core::assert(nibbles > 0)
+        core::assert(nibbles <= 64)
+        core::assert(nibbles % 2 == 0)
+        if nibbles < 64 {
+            core::assert(word << (4 * nibbles as u256) == 0)
+        }
+        TrieKey { word, key_nibbles: nibbles }
     }
 
     pub const fn value(self) -> u256 {
-        self.0
+        self.word
+    }
+
+    pub const fn nibbles(self) -> usize {
+        self.key_nibbles
     }
 }
 
@@ -475,7 +514,7 @@ pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
         var child = item
         var from_extension = false
         if items.len() == BRANCH_ITEMS {
-            if position == KEY_NIBBLES {
+            if position == key.nibbles() {
                 if remaining {
                     return Result::Err(ProofError::TrailingNodes)
                 }
@@ -502,7 +541,7 @@ pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
             if !path.is_leaf && path.len == 0 {
                 return Result::Err(ProofError::BadRlp)
             }
-            if position + path.len > KEY_NIBBLES {
+            if position + path.len > key.nibbles() {
                 return Result::Err(ProofError::BadRlp)
             }
             var matches = true
@@ -521,7 +560,7 @@ pub fn verify_trie<P: ProofNodes>(root: Root, key: TrieKey, nodes: P) -> Result<
             }
             position += path.len
             if path.is_leaf {
-                if position != KEY_NIBBLES {
+                if position != key.nibbles() {
                     return Result::Err(ProofError::KeyNotConsumed)
                 }
                 if remaining {
@@ -718,75 +757,75 @@ pub fn load_packed<const N: usize>(_ words: [u256; N], len: usize) -> MemBuffer 
     buffer
 }
 
-const BENCH_STORAGE_ROOT: u256 = 0xe4981fbeb781a2ab41202c5d15210882b7e6efca57ff190dde34660fa6c7ed72
+const BENCH_STORAGE_ROOT: u256 = 0x9e9835e9deaf12a260cf88bbf9a0c3fbccee769c70db7c442a9f64b67c67c777
 const BENCH_SLOT: u256 = 0x0000000000000000000000000000000000000000000000000000000000000000
 const BENCH_VALUE: u256 = 39553310892875263560936207548857176834471854732421237974622739861269930573850
 const BENCH_NODE_WORDS: [u256; 92] = [
-    0xf90211a090e094c4a8522f33b28e98677712af3337ec9cdd8abee9047c98257d,
-    0x7458be04a014b5063a88d10467bd4b426edff98cf2e99a5dcbd8c2abc98317ce,
-    0x5d033272c0a03aea0b69f4909dd72603be6685740c4ca4dbac1b40e09addf21e,
-    0x685eec116aeba0361063ab77ccd1beae135c3e29be871966a473b0cf6a2b85c2,
-    0xa6789409997363a032388504d6497952ce343f8addc1f0edf7704d7cc62ce1c2,
-    0x89f1fcb4d2d2e570a0908558d432ae1d8c3a1800bae4708e643f49f87fdd494a,
-    0x960c471fa1d6bb4bf8a0a892377d78c2846203675d1a8825bae17dc95d56ac6e,
-    0xd3d8b96fe3a2f93deec8a0ad8974ea40a11416f2aa90a6a5a1b873ea4a42a795,
-    0xdf242b3eab433ccb42f313a01db8cdcfe6464893f3394c11fd1cd321aec73a4f,
-    0x7e1585a443b63e5a417dc671a0cb939f04db98b4c84b3c19e0e2fc36e0fa0c3a,
-    0x54bd64c101e93297460e3b0d69a049b1a7a1c43d94ac2c242f09fa15a7dfb192,
-    0xc0165439a05c2844cffebe45b5c7a03dd9ac4932e5440fd327022de75360821b,
-    0x5afd6830559a2f09755cc0f3e93e80a08a746ac6065dfef2f7d2b777ecf71b51,
-    0x29f5f4aa1c49b000cbc75347848d4022a011090c9f7cc28af03a47a9dabcb9ce,
-    0x5b9ba5fc654873be617f3b6835e23c6723a0cd100e7e13751922c231a4c5c622,
-    0x81cdeebaeec25fe56802e33cbaf9d19d83b4a0fd3c453a10293cd38ee87b8255,
-    0xde228754c853a37b95c7484e2dcabb5538a41e80f90211a030d3b2340bc95668,
-    0x121faf13f809b0d0a882247b045e302595ac04fb3861c1c9a03904c2b35a87a3,
-    0xc2cb3d9ab371f3fb6fa2aac1a96795696eb3aadbb7655cd479a00829e1afcd72,
-    0xe52bafd13abb8c7a527eca9b24b82b5b5a815151fc4464c3042aa0c997733969,
-    0x7399ae2660dfb71039c48e77ae4e4bb741d8bd7f8a0a04f6942c89a03985e5ce,
-    0xb2353578a909000961d5df448af1b7b977068ecd3ed6591c1bce878ba04964e2,
-    0x32a91e52e9a1032c5e570ec455ce6d1cb9d1c9841cfc018ff9f3979a54a05af5,
-    0xc4612d1de1c5dd24e3699c7135e6b58b4ab9d6a7c0f058d3b4d446f33d09a031,
-    0xa864492f0d5631204c7453da0f59aa4d9423bbfe721cba564fb7b535712cf4a0,
-    0x8cc0a3b736b2d25566c481e2416eb724b5678071e44c4c29cbfdae58effaa9cf,
-    0xa059b79f8364948f7ec5fd71d534615b141ad95d574062b700d6d4473a78a72f,
-    0x9ea064ee4c6d154c46eead6606c57b10929aba7733dc7a6c0cc9bcbb89fa0b45,
-    0x74aba0ee8c2f2742ff5b7efbadccbc93be9abe0b65c425a9123dc56da7bfadc9,
-    0x3bde46a0e8b1e17eabfc3949367569cb78b91d9d6024cbf9220f83659a29502e,
-    0xe4963662a0221b404b402569e2ea116963a3d10df08247e4d5566067a8da3e01,
-    0x38efe04d01a03be16363f856515582f49eca0245c5bbf0cba69ce98b2dc56178,
-    0x6ea155bf881da0ce7393890e4a21985a262901aaa4fd802b8b531e894e656a81,
-    0x986b18b7de080e80f90211a01b8c8e4af988361b2b29645342fa27a2122447cb,
-    0xdd3136531137ab80a6a8e213a00fa4e9406573cdc3620bae02365ce81397df92,
-    0x72120f141264355e87a6c4949ea092b2f925609d5a7ebcdd56befbe8f6d9724a,
-    0xedf28d546b3b4974bd2e85eb8244a06ef73e65f3713bec983cbd04ef06e7d2c3,
-    0x76c30a566bd0ddfacf0b00c7632f66a08403ceb094b459a896271588571c6545,
-    0x92d0a94b442ddbd4ce6722e1c431db91a0b5c56783b32d5b494fb91114ae0042,
-    0x7dc41651d954e8543bff95784182ffa72ba06e8dea0192eda1f5e207945c0434,
-    0xb1fdcf570304a1afc79bc1e0316db907affda0377a3a21f2e4085d31dd6dfc53,
-    0x295cdbdee2b01e424bbcdc81f96ab7fa2d3e66a01af4d9a2fa1bc122d2bebbde,
-    0x4457abbc6b9f64bb3756390851f23f8a83e63872a0e328346de9be2ac8a6b60c,
-    0x1236fdd01aef0e8f8768c2fc2d5896f44a0d24ecbea0a6a847f26499c150d03a,
-    0xac1205f44d55c55095ba5c573943759a44eba4317995a0cae58d0e3ac87db4eb,
-    0x7bd55bcdddc3dd912a51e121d59542a272ef25ad6432aba05359dda5949cbbae,
-    0x61a23b2430136ef85a76b3874775e6016d85424fffbe1c7da09a6a0835df558f,
-    0xdfdfc97b678abb355d533f2ebce76716383a1b52c872fc77eea0b591c482134d,
-    0x2137f7f635da147d0b78dd0797e6794d6ab10b9c360f761f7c9da0f895e35a3b,
-    0x4ec947b112781679a20ef18615d4abd60b4486cccb3460778efb2e80f90211a0,
-    0xa7ae4f7efa043442969b8a6ec700a09ba41eaee87d6948b21cd79556cd974474,
+    0xf90211a0d283ebaa9d0fecb521844c432e8948430d5aaabcd9683be0a0300f00,
+    0x122f05dea007b16fc7273f9c89f53f1e40760b0292c7e1ab88554c2c737dc0f7,
+    0x8f7670a784a0f02adc2e1643832c86052456c0cc99328e5fa0586967e40b43e8,
+    0x026fb10161e0a0b20b6d7d3f8ddc0a576d9f9fc60d3df1f51ac3f1454927beca,
+    0x35304c39899068a0810cd3aca99b1013d14423b6655aa552c92a8b6c9da304ed,
+    0x3c7155eed300bbafa0cc0c559e0cc10652fdc901cd9182db3d1c0d664e4bc443,
+    0x508b9c9148ffd1c9d4a032a0d30b478159b9f59f93ca0a657a3644d273f77b3f,
+    0xe8a24341fb5f44509bafa033a46eb27d08da91ef12fb6470e8457c4a65bd4658,
+    0xf969489907e69c75d2bf66a0284021a5a998f93ddb70e19a837fc8329a9bd12b,
+    0x9ae941454a35411294cea09aa0df91a0f28a4b79f7104913bfcc65d059587b7e,
+    0xc904fcc058530f7ca98b6cedeea0de676a8e1544078b224e55b73a3adb8b0ff4,
+    0x2aa50529fec4ec4afe9ec6c1ed09a094d3c9555dd2122759a3e57c33ebe7eb04,
+    0x41e205f0fff8864b5303a14027fae3a0be1f3328ef02252598cf8bad4aa99472,
+    0x780d9daefc5fb5a43b87ca84a8ec16e3a0914c89d50b109bf64313a66214c891,
+    0x9352d0cb306023b029d368b87c3d6e070aa08dddd7a013bc16410885fb08d989,
+    0xbc427e99fe3efca3cac1a741ee2a7b0fa690a08198b5a287bc4d2543b2c827b8,
+    0x36945615a2954ffba416e5c0b92caee847831f80f90211a0fe1f6350b813e7bd,
+    0x33a73340514e93e2fc5c1b1775187825a41ae77c6c4b3304a0f90b978ac4f384,
+    0x6939e12b00d081ed6a2f72c9ee42865161d4387012e70bd279a06031b706d58d,
+    0xff0bf2dd9601f6447074d759cd8479eb5eca501eeeea637c1b16a026202ad8af,
+    0x6a21d4725aa904edd06bb81e97dcf7e5587cca94bc4da7fcc84df9a072b3d576,
+    0x8baf54a6aa46ad87f13fb9292b63a9bd9946d0fb399aca8dc2a15daba0e15bdf,
+    0xf499998e864f2d3fd3ead65f27b568c8ac2fbb35bfe376c6b64845d6efa096a3,
+    0x67ef71d5b97018f282b48cec9f402932f46d6eb4fff8831efa2bb8e19804a087,
+    0x3f5a5da52a4711e1abd8fcb02a718156805a1a3d0111bf67a554364af2fa16a0,
+    0x18c145bdba385609357769591f073d0b896bebf086c3a65a1744d89ece359175,
+    0xa0a3368be724a62b8c2d86562ff6dea29efd86c6e88c5eb3d2f3183a4187fbe0,
+    0x87a0519b52f3c86d5ea8d8b8a7795d2f1c00a5bc335d8a076fdb8e03c7703fe1,
+    0x2af2a0d4b1cacaaf1b86291a433210e9d59fd8e69cd5084fcd6166eaefb429a7,
+    0x34c81fa064e3c50cd67d0d70391e339719e36d77c2bac99d745183cfd85310f6,
+    0x1d6f5a08a02f154e2cadd04bd3814af6fb7131db772f260fbaf67456f3de31b9,
+    0x1eab774c49a0be060161680701ea9694e71e6749450ccef77e309733f033c140,
+    0x641bb05750dfa058252bb21bb909e76dbc9e9ba257bf5c70ea893e5231b935f3,
+    0xd81b3968f27ecd80f90211a03e58496fced50e5b83f8bd6ce9c208b4a038e898,
+    0xe064d64ede33e6ef38e1e6afa010f5221b5dfecd9380fdecf50749bcbae80150,
+    0x06433f8253388611d6fb2ec7f7a071b73f786fdcabf3ded82dc8323f6e35c54c,
+    0xd842ff93839a968a6e585d847091a07ad38841238eae8c65755dd050d25cb69a,
+    0xfcc876c1c9b9f663f972ea4b3ec64ea0a92ce978fe2713e23cfd553113f1b3cb,
+    0x13b80b856c6261c861ceb770f34fe872a0630da0de5be7bea3373d5ec60cd56b,
+    0x4553f720f98a141e479acbb1138cf53f2ea0b28a9f4c612087ed54b3ed8fdfd5,
+    0x12132c79a6e34da60960d422cf281c9b8255a0e60051fac49589812fa7ec8b0e,
+    0xee35085a078e3cfc7d324d8757c4072941d5c1a0b4efbbac01bddc56d08e2afe,
+    0xc6ecbe0a5226bd25a3aafe9be22c434883525c84a09f681445658896536caf02,
+    0x87ce95122139b1b6b01efb583bbcb3374a1e25e9eaa0056aae0c6e8e5599f83b,
+    0x7e30361f3b1bc8b916cc231453e6586fbf9530abb513a029511fd4bf12ae1112,
+    0x9607d289be7cb21c8573828531199a108ff738ee4439cfa0fffde9f22af58af9,
+    0x68f5d917a18d855d277ddceeee34a75abdd701112370d90fa0273dc3109baca7,
+    0x962daefbeecbcd5d4532401b04a24c55d6a1a8dd9829e9d495a097be180f8b60,
+    0x16843145ce299aba26cce5531349d2ce0d6492e8f7cd8b8fed37a04ce5c163a1,
+    0x218e3eca80277ee98bffbd541601638cc0a07a434793706ae5789a80f90211a0,
+    0x2d699cb57211ca22e08acfb2fdd80aa8edc1117f7438dc0534d301115c3b12ab,
     0xa0844dc4cf96a7138e061aab59f206c4c4d28b3589320a95a83d28877d95d3bb,
     0xdea0abe63b48bf81c2e79436e36b0aebb9957937daa90e1a47d6aec68bb6294f,
-    0x9d24a0cd74846f0d246fd83eb2742e4abe2846b13191a66ee641676db6da45e3,
-    0xb1bb01a0d0180a4ceb5fc58cb672542ed2211211b56856693161050fb06473bd,
+    0x9d24a0c5116619e1bd47b99f6438a559f8a05d269867f545bf56aabc7349eac6,
+    0x5843cea0d0180a4ceb5fc58cb672542ed2211211b56856693161050fb06473bd,
     0x233902daa0eef97af22b5028226a197f1d3eec184d78e6931f9e2a631ee5b503,
     0x7f4c2cac3aa0faa13d53e412b19c52cb6d2d678700462ba3329b9353f2b61ded,
-    0x55899cc22a72a04a146f00102ad17964dc16636f9a4b9a83a9e2d2c0a7442166,
-    0xcc0f71e6c7fbaea01afe6dc886e9ad0e80c5ed08572e8fab9f62256af63b2275,
-    0x463ced6afbcc5d00a067291788364af4f787a9a449d5c103aa696894bb9911bd,
-    0x4238ba7a7614c22cdaa0297f9f58dcf79b63c2e296b7484ef6445e4d68fefb6c,
-    0xa32e5752e39d7d77de3ca0db4d0319ac7bfeabbf0bce91991bc0920d2f2cb9f7,
-    0xbbeb9c745dd17b95d399f1a074ce262bd7fbc3cd20d8617774a46ae45cd2e9d3,
-    0xdfee4ccfc4f4c6bbdf9cbb3ca0d6502d16195a38ea9273d82b6c9383fade2689,
-    0xaa0fe6bffa4667955b8c4d1882a098483a477fa8d6c87886968ab6ffc4a63a04,
+    0x55899cc22a72a00eb7be7b6fdd0b0b1bca89408fbf898dee7548c3a5f794c38b,
+    0x96ff7ef8696514a01afe6dc886e9ad0e80c5ed08572e8fab9f62256af63b2275,
+    0x463ced6afbcc5d00a0909fdeb1264d6f2e76b47901aaec494a8d8d06512299cd,
+    0xe3294890f2acdc1431a0e553867989a9fbf37f6434549d7968d6a193cf6342b3,
+    0x62fc35d12487e4c5ee8ba012bc5aec29bc06709398b3cc7e0aa0ae3b5747e1a6,
+    0xc8d289205eb40e8e726247a0818daa1454d08a47ef2bcdba0f7e4c8d90807d14,
+    0x73125baa3d6f242908bdd418a085bb625375bc4e7ee9516299600cf890c9111c,
+    0xadd2467b7f6a7ecd6c8885b6c4a098483a477fa8d6c87886968ab6ffc4a63a04,
     0x6f099614c31a8d54273541966667a0a2f866b0237072a309e1f5b7e513be8f0e,
     0xde8b18126fae012d5932517fdb73ce80f90211a0d045097ab06ef6a3ee9209f8,
     0xfd24eaee567e605fcf96c4093145489f519b197fa026c38e13c75b44240d4531,
@@ -798,8 +837,8 @@ const BENCH_NODE_WORDS: [u256; 92] = [
     0xf95aa15dab6011532c4c9d83453e7492ce59e7036dd294eef287a0ef3b278ac1,
     0x0799550ef5a7434e242970c4cf1135485ff93b17c7c8534152d9f3a04ecdd3f5,
     0x4348af6d4d114f603b742631a8e8335c38a62f93a22b5623372c7ee7a0098644,
-    0x6b4834f98c77174b8d69b388e1aae361b478537b26c5fb8b352bd949b3a04cd0,
-    0x3781a8a586870e6bd6c42e6702bf4943eba0b1482e8681b8dab6d657bfd3a0f9,
+    0x6b4834f98c77174b8d69b388e1aae361b478537b26c5fb8b352bd949b3a0b6b3,
+    0xf4bcde8bbec4a1b1292a146b9897cd6df1ac2fac180f97639ff25b22efe5a0f9,
     0xfc31f0e7f1fd6f3b1897c9c3c2507eda1035601b582fddf1c36403f059a238a0,
     0x7f28f9f634f61d28ec82cb70c56b264804a21e9c94dc657488652cd890d9fc1c,
     0xa0bc354778ae54b8218ac8889c27bdb4725c2aec0397f92bf8af07f469216c59,

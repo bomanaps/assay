@@ -44,6 +44,7 @@ from remerkleable.tree import concat_gindices
 import capture_getproof
 import oracle_mpt
 import oracle_ssz
+import receipt_trie
 import ssz_types as t
 
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
@@ -166,6 +167,42 @@ def check_positions(cls, keys_by_field, oracle_by_field):
             fail(f"position of {field}: remerkleable {type_gindex(cls, keys)}, oracle {oracle_by_field[field]}")
 
 
+def receipt_fixture_json(trie, receipts, header, chain_id, name, index, log_index):
+    nodes, value = trie.prove(index)
+    fixture = {
+        "name": name,
+        "kind": "receipt",
+        "chainId": chain_id,
+        "header": {"number": header["number"], "hash": header["hash"], "receiptsRoot": header["receiptsRoot"]},
+        "txIndex": hex(index),
+        "proof": ["0x" + node.hex() for node in nodes],
+    }
+    if value is None:
+        if index < trie.count:
+            fail(f"receipt {index} should be present but the trie proves it absent")
+        return fixture
+    receipt = receipts[index]
+    if value != receipt_trie.encode_receipt(receipt):
+        fail(f"proved value for receipt {index} differs from its RPC encoding")
+    fixture["receipt"] = {
+        "succeeded": receipt["status"],
+        "cumulativeGas": receipt["cumulativeGasUsed"],
+        "txType": receipt.get("type", "0x0"),
+        "logCount": hex(len(receipt["logs"])),
+    }
+    if log_index is not None:
+        log = receipt["logs"][log_index]
+        data = bytes.fromhex(log["data"][2:]) if log["data"] != "0x" else b""
+        fixture["log"] = {
+            "index": hex(log_index),
+            "address": log["address"],
+            "topics": log["topics"],
+            "dataHash": "0x" + receipt_trie.synth_trie.keccak256(data).hex(),
+            "dataLen": hex(len(data)),
+        }
+    return fixture
+
+
 def chain():
     chain_id_beacon = check_network()
     url = env("RPC_URL")
@@ -186,7 +223,7 @@ def chain():
         fail(f"payload block number {int(payload.block_number)}, expected {number}")
     if hex32(payload.state_root) != header["stateRoot"] or hex32(payload.block_hash) != header["hash"]:
         fail("payload state_root or block_hash differs from execution block N")
-    fields = {f"execution_payload.{f}": f for f in ("state_root", "block_number", "block_hash")}
+    fields = {f"execution_payload.{f}": f for f in ("state_root", "receipts_root", "block_number", "block_hash")}
     oracle_positions = {name: oracle_ssz.payload_gindex(f) for name, f in fields.items()}
     check_positions(t.BeaconBlock, {name: ["body", "execution_payload", f] for name, f in fields.items()}, oracle_positions)
     proofs = []
@@ -216,12 +253,27 @@ def chain():
         fail(f"{ABSENT} holds an account at block N")
     if any(f["chainId"] != chain_id_beacon for f in storage):
         fail("execution chain id differs from the beacon deposit chain id")
+    receipts = capture_getproof.rpc(url, "eth_getBlockReceipts", [hex(number)])
+    trie = receipt_trie.ReceiptTrie(receipts, header["receiptsRoot"])
+    logged = next((i for i, r in enumerate(receipts) if r["logs"]), None)
+    if logged is None:
+        fail("block N has no receipt with logs; run again")
+    receipt_fixtures = [
+        receipt_fixture_json(trie, receipts, header, chain_id_beacon, "chain_receipt_logged", logged, 0),
+        receipt_fixture_json(trie, receipts, header, chain_id_beacon, "chain_receipt_last", len(receipts) - 1, None),
+        receipt_fixture_json(trie, receipts, header, chain_id_beacon, "chain_receipt_absent", len(receipts) + 5, None),
+    ]
     beacon = {
         "name": "chain_beacon",
         "kind": "beacon_chain",
         "consensusVersion": oracle_ssz.CONSENSUS_VERSION,
         "beacon": {"blockRoot": beacon_root, "header": header_json(beacon_header)},
-        "execution": {"header": header, "childHeader": child, "mptFixtures": [f["name"] for f in storage]},
+        "execution": {
+            "header": header,
+            "childHeader": child,
+            "mptFixtures": [f["name"] for f in storage],
+            "receiptFixtures": [f["name"] for f in receipt_fixtures],
+        },
         "proofs": proofs,
     }
     rows = [capture_getproof.fixture_row(f, "capture_beacon.py chain") for f in storage]
@@ -231,7 +283,14 @@ def chain():
             header["stateRoot"], "capture_beacon.py chain",
         )
     )
-    stage_and_commit(storage + [beacon], rows)
+    for fixture in receipt_fixtures:
+        rows.append(
+            capture_getproof.readme_row(
+                fixture["name"], "receipt", chain_id_beacon, int(header["number"], 16), header["hash"],
+                header["receiptsRoot"], "capture_beacon.py chain",
+            )
+        )
+    stage_and_commit(storage + receipt_fixtures + [beacon], rows)
 
 
 def validator(state_path, index_text, fixture_name):

@@ -87,6 +87,31 @@ impl StorageRoot {
     }
 }
 
+pub struct ReceiptsRoot(u256)
+
+impl Copy for ReceiptsRoot {}
+impl Snapshot for ReceiptsRoot {}
+
+impl Eq for ReceiptsRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl ReceiptsRoot {
+    pub const fn new(_ value: u256) -> Self {
+        ReceiptsRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
 pub struct CodeHash(u256)
 
 impl Copy for CodeHash {}
@@ -158,24 +183,38 @@ impl GIndex {
     }
 }
 
-pub struct TrieKey(u256)
+pub struct TrieKey { word: u256, key_nibbles: usize }
 
 impl Copy for TrieKey {}
 impl Snapshot for TrieKey {}
 
 impl Eq for TrieKey {
     const fn eq(self, _ other: Self) -> bool {
-        self.0 == other.0
+        self.word == other.word && self.key_nibbles == other.key_nibbles
     }
 }
 
 impl TrieKey {
     pub const fn new(_ value: u256) -> Self {
-        TrieKey(value)
+        TrieKey { word: value, key_nibbles: 64 }
+    }
+
+    pub fn short(_ word: u256, _ nibbles: usize) -> Self {
+        core::assert(nibbles > 0)
+        core::assert(nibbles <= 64)
+        core::assert(nibbles % 2 == 0)
+        if nibbles < 64 {
+            core::assert(word << (4 * nibbles as u256) == 0)
+        }
+        TrieKey { word, key_nibbles: nibbles }
     }
 
     pub const fn value(self) -> u256 {
-        self.0
+        self.word
+    }
+
+    pub const fn nibbles(self) -> usize {
+        self.key_nibbles
     }
 }
 
@@ -422,6 +461,7 @@ pub const HEADER_STATE_ROOT: u256 = field(HEADER_FIELDS, 3)
 pub const HEADER_BODY_ROOT: u256 = field(HEADER_FIELDS, 4)
 pub const EXECUTION_PAYLOAD: u256 = concat(HEADER_BODY_ROOT, field(BODY_FIELDS, 9))
 pub const PAYLOAD_STATE_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 2))
+pub const PAYLOAD_RECEIPTS_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 3))
 pub const PAYLOAD_BLOCK_NUMBER: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 6))
 pub const PAYLOAD_BLOCK_HASH: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 12))
 pub const STATE_GENESIS_VALIDATORS_ROOT: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 1))
@@ -434,6 +474,7 @@ pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_F
 static_assert(HEADER_STATE_ROOT == 11)
 static_assert(HEADER_BODY_ROOT == 12)
 static_assert(PAYLOAD_STATE_ROOT == 6434)
+static_assert(PAYLOAD_RECEIPTS_ROOT == 6435)
 static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
 static_assert(PAYLOAD_BLOCK_HASH == 6444)
 static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
@@ -441,6 +482,7 @@ static_assert(STATE_FORK_CURRENT_VERSION == 2829)
 
 pub enum PayloadField {
     StateRoot,
+    ReceiptsRoot,
     BlockNumber,
     BlockHash,
 }
@@ -450,6 +492,7 @@ impl PayloadField {
         GIndex::new(
             match self {
                 Self::StateRoot => PAYLOAD_STATE_ROOT,
+                Self::ReceiptsRoot => PAYLOAD_RECEIPTS_ROOT,
                 Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
                 Self::BlockHash => PAYLOAD_BLOCK_HASH,
             },
@@ -568,6 +611,20 @@ impl Validator {
         )
         hash_pair(left, right)
     }
+}
+
+pub fn verify_execution_receipts_root<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    receipts_root: u256,
+    branch: P,
+) -> Result<ProofError, ReceiptsRoot> {
+    verify_payload_field(
+        beacon_root,
+        which: PayloadField::ReceiptsRoot,
+        leaf: receipts_root,
+        branch,
+    )?
+    Result::Ok(ReceiptsRoot::new(receipts_root))
 }
 
 pub fn verify_payload_field<P: ProofNodes>(
