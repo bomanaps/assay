@@ -1,0 +1,15 @@
+$ assay verify fixtures/chain_beacon.json
+anchor (trusted input): beacon block root 0x90d10c78097f7a1554bfce7374776ebbb2bfc8aebeb2cc892f12215f62736090
+ok   header binds to the anchor: slot 15673476, proposer 2264177
+ok   execution_payload.state_root = 0xdce0a45f32de6565d56b183ec822b32396fc6032f59f740526d35d62b13f84e1 (gindex 6434, 12 siblings)
+ok   execution_payload.block_number = 0xaa58930100000000000000000000000000000000000000000000000000000000 (gindex 6438, 12 siblings)
+ok   execution_payload.block_hash = 0x1a2dd2759a3e1d8731736ae1b6e039da8a477aee37a775ae14f338609c9aef6e (gindex 6444, 12 siblings)
+ok   chain_storage_usdc: account proven, nonce 1, balance 0
+ok   chain_storage_usdc: slot 0x00...00 = 1442626706025541066953462928744535818996053290554
+ok   chain_storage_usdc: slot 0x00...a55a70ff = 0
+ok   chain_storage_weth: account proven, nonce 1, balance 2071183220545486189319730
+ok   chain_storage_weth: slot 0x00...00 = 39553310892875263560936207548857176834471854732421237974622739861269930573850
+ok   chain_storage_weth: slot 0x00...01 = 39473711962023174749424659199615060097653232135126263878786656434573155500040
+ok   chain_storage_weth: slot 0x00...02 = 18
+ok   chain_account_absent: account proven absent
+verified: 3 linked accounts and 5 slots proven from the beacon root alone
