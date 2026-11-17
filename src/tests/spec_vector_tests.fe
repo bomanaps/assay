@@ -1,0 +1,47 @@
+use ingot::fixtures::spec_vectors as sv
+use ingot::{bytes48_leaf, BeaconBlockHeader, BeaconRoot, Validator}
+use core::MemBuffer
+
+fn pubkey_root(case: usize) -> u256 {
+    var pubkey = MemBuffer::new(48)
+    var full = MemBuffer::new(64)
+    full.write_word(offset: 0, value: sv::SPEC_VALIDATOR_PUBKEY_A[case])
+    full.write_word(offset: 32, value: sv::SPEC_VALIDATOR_PUBKEY_B[case])
+    pubkey.copy_from(dest_offset: 0, full.slice(offset: 0, len: 48))
+    match bytes48_leaf(pubkey.span()) {
+        Result::Ok(root) => root,
+        Result::Err(_) => {
+            core::assert(false)
+            0
+        },
+    }
+}
+
+#[test]
+fn every_consensus_spec_vector_root_is_reproduced() {
+    var case: usize = 0
+    while case < sv::SPEC_CASES {
+        let record = Validator {
+            pubkey_root: pubkey_root(case),
+            withdrawal_credentials: sv::SPEC_VALIDATOR_CREDENTIALS[case],
+            effective_balance: sv::SPEC_VALIDATOR_BALANCE[case],
+            slashed: sv::SPEC_VALIDATOR_SLASHED[case],
+            activation_eligibility_epoch: sv::SPEC_VALIDATOR_ELIGIBILITY[case],
+            activation_epoch: sv::SPEC_VALIDATOR_ACTIVATION[case],
+            exit_epoch: sv::SPEC_VALIDATOR_EXIT[case],
+            withdrawable_epoch: sv::SPEC_VALIDATOR_WITHDRAWABLE[case],
+        }
+        core::assert(record.root() == sv::SPEC_VALIDATOR_ROOT[case])
+        let header = BeaconBlockHeader {
+            slot: sv::SPEC_HEADER_SLOT[case],
+            proposer_index: sv::SPEC_HEADER_PROPOSER[case],
+            parent_root: sv::SPEC_HEADER_PARENT[case],
+            state_root: sv::SPEC_HEADER_STATE[case],
+            body_root: sv::SPEC_HEADER_BODY[case],
+        }
+        core::assert(
+            header.root() == BeaconRoot::new(sv::SPEC_HEADER_ROOT[case]),
+        )
+        case += 1
+    }
+}

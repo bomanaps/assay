@@ -1,0 +1,204 @@
+use core::{MemBuffer, MemSpan, MemVec}
+use json::Value
+
+pub fn parse_decimal(_ text: MemSpan) -> Option<u256> {
+    if text.len() == 0 || text.len() > 77 {
+        return Option::None
+    }
+    if text.len() > 1 && text.byte_at(0) == 0x30 {
+        return Option::None
+    }
+    var value: u256 = 0
+    var i: usize = 0
+    while i < text.len() {
+        let digit = text.byte_at(i)
+        if digit < 0x30 || digit > 0x39 {
+            return Option::None
+        }
+        value = value * 10 + (digit - 0x30) as u256
+        i += 1
+    }
+    Option::Some(value)
+}
+
+fn nibble(_ digit: u8) -> Option<u8> {
+    if digit >= 0x30 && digit <= 0x39 {
+        return Option::Some(digit - 0x30)
+    }
+    if digit >= 0x61 && digit <= 0x66 {
+        return Option::Some(digit - 0x57)
+    }
+    Option::None
+}
+
+pub fn parse_hex_blob(_ text: MemSpan) -> Option<MemBuffer> {
+    if text.len() < 2 || text.len() % 2 != 0 {
+        return Option::None
+    }
+    if text.byte_at(0) != 0x30 || text.byte_at(1) != 0x78 {
+        return Option::None
+    }
+    var bytes = MemBuffer::with_capacity((text.len() - 2) / 2)
+    var at: usize = 2
+    while at < text.len() {
+        let high = match nibble(text.byte_at(at)) {
+            Option::Some(value) => value,
+            Option::None => {
+                return Option::None
+            },
+        }
+        let low = match nibble(text.byte_at(at + 1)) {
+            Option::Some(value) => value,
+            Option::None => {
+                return Option::None
+            },
+        }
+        bytes.push((high << 4) | low)
+        at += 2
+    }
+    Option::Some(bytes)
+}
+
+pub fn parse_hex_fixed(_ text: MemSpan, len: usize) -> Option<MemBuffer> {
+    let bytes = parse_hex_blob(text)?
+    if bytes.len() != len {
+        return Option::None
+    }
+    Option::Some(bytes)
+}
+
+pub fn parse_hex_word(_ text: MemSpan) -> Option<u256> {
+    let bytes = parse_hex_fixed(text, len: 32)?
+    Option::Some(bytes.read_word(0))
+}
+
+pub fn parse_hex_quantity(_ text: MemSpan) -> Option<u256> {
+    if text.len() < 3 || text.len() > 66 {
+        return Option::None
+    }
+    if text.byte_at(0) != 0x30 || text.byte_at(1) != 0x78 {
+        return Option::None
+    }
+    if text.len() > 3 && text.byte_at(2) == 0x30 {
+        return Option::None
+    }
+    var value: u256 = 0
+    var at: usize = 2
+    while at < text.len() {
+        let digit = match nibble(text.byte_at(at)) {
+            Option::Some(digit) => digit,
+            Option::None => {
+                return Option::None
+            },
+        }
+        value = (value << 4) | digit as u256
+        at += 1
+    }
+    Option::Some(value)
+}
+
+pub fn string_field<K: json::Key>(_ object: Value, _ key: K) -> Option<ref MemSpan> {
+    object.get(key)?.as_string()
+}
+
+pub fn kind_equals<const N: usize>(_ document: Value, _ expected: String<N>) -> bool {
+    match document.get("kind") {
+        Option::Some(ref value) => {
+            match value.as_string() {
+                Option::Some(ref kind) => kind == expected,
+                Option::None => false,
+            }
+        },
+        Option::None => false,
+    }
+}
+
+pub fn decimal_field<K: json::Key>(_ object: Value, _ key: K) -> Option<u256> {
+    parse_decimal(string_field(object, key)?)
+}
+
+pub fn decimal_u64_field<K: json::Key>(_ object: Value, _ key: K) -> Option<u64> {
+    let value = decimal_field(object, key)?
+    if value >> 64 != 0 {
+        return Option::None
+    }
+    Option::Some(value.downcast_truncate())
+}
+
+pub fn word_field<K: json::Key>(_ object: Value, _ key: K) -> Option<u256> {
+    parse_hex_word(string_field(object, key)?)
+}
+
+pub fn quantity_field<K: json::Key>(_ object: Value, _ key: K) -> Option<u256> {
+    parse_hex_quantity(string_field(object, key)?)
+}
+
+pub fn word_list(_ value: Value) -> Option<MemVec<u256>> {
+    match value {
+        Value::Array(ref items) => {
+            var words: MemVec<u256> = MemVec::with_capacity(items.len())
+            var i: usize = 0
+            while i < items.len() {
+                words.push(parse_hex_word(items[i].as_string()?)?)
+                i += 1
+            }
+            Option::Some(words)
+        },
+        _ => Option::None,
+    }
+}
+
+pub fn span_equals(_ left: MemSpan, _ right: MemSpan) -> bool {
+    if left.len() != right.len() {
+        return false
+    }
+    var i: usize = 0
+    while i < left.len() {
+        if left.byte_at(i) != right.byte_at(i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+pub fn push_string<const N: usize>(_ buffer: mut MemBuffer, _ text: String<N>) {
+    var i: usize = 0
+    while i < text.len() {
+        buffer.push(text.byte_at(i))
+        i += 1
+    }
+}
+
+pub fn string_buffer<const N: usize>(_ text: String<N>) -> MemBuffer {
+    var buffer = MemBuffer::with_capacity(N)
+    push_string(mut buffer, text)
+    buffer
+}
+
+pub fn sibling_path(input_path: MemSpan, name: MemSpan) -> MemBuffer {
+    var last: usize = 0
+    var found = false
+    var i: usize = 0
+    while i < input_path.len() {
+        if input_path.byte_at(i) == 0x2f {
+            last = i + 1
+            found = true
+        }
+        i += 1
+    }
+    var path = MemBuffer::with_capacity(last + name.len() + 5)
+    i = 0
+    while found && i < last {
+        path.push(input_path.byte_at(i))
+        i += 1
+    }
+    i = 0
+    while i < name.len() {
+        path.push(name.byte_at(i))
+        i += 1
+    }
+    let suffix: String<5> = ".json"
+    push_string(mut path, suffix)
+    path
+}

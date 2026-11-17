@@ -1,0 +1,70 @@
+use std::env::Args
+use std::fs::Fs
+use std::io::Stdout
+const CHAIN_KIND: String<12> = "beacon_chain"
+const VALIDATOR_KIND: String<16> = "beacon_validator"
+const TRIE_KIND_ACCOUNT: String<7> = "account"
+const TRIE_KIND_STORAGE: String<7> = "storage"
+
+fn usage() -> i32 uses (out: mut Stdout) {
+    println!("usage: assay verify <fixture.json>")
+    println!()
+    println!(
+        "Verifies every proof in a beacon_chain or beacon_validator fixture",
+    )
+    println!(
+        "offline, against the beacon block root the file names as its anchor.",
+    )
+    println!(
+        "A beacon_chain file's linked trie fixtures are read from its folder.",
+    )
+    println!()
+    println!(
+        "exit codes: 0 everything proven, 1 a proof failed, 2 bad input",
+    )
+    2
+}
+
+pub fn main() -> i32 uses (args: Args, fs: Fs, out: mut Stdout) {
+    if args.count() != 3 {
+        return usage()
+    }
+    let verb: String<6> = "verify"
+    if args.get(1).span() != verb {
+        return usage()
+    }
+    let path = args.get(2)
+    let bytes = match fs.read(path) {
+        Result::Ok(bytes) => bytes,
+        Result::Err(error) => {
+            println!("FAIL cannot read ", path.span(), ": ", error)
+            return 2
+        },
+    }
+    let document = match json::parse(bytes.span()) {
+        Result::Ok(document) => document,
+        Result::Err(_) => {
+            println!("FAIL ", path.span(), " is not JSON")
+            return 2
+        },
+    }
+    if ingot::input::string_field(document, "kind").is_none() {
+        println!("FAIL the file names no kind")
+        return 2
+    }
+    if ingot::input::kind_equals(document, CHAIN_KIND) {
+        return ingot::chain::verify_chain(document, input_path: path.span())
+    }
+    if ingot::input::kind_equals(document, VALIDATOR_KIND) {
+        return ingot::validator::verify_validator_file(document)
+    }
+    if ingot::input::kind_equals(document, TRIE_KIND_ACCOUNT)
+        || ingot::input::kind_equals(document, TRIE_KIND_STORAGE) {
+        println!(
+            "FAIL a bare trie fixture has no trusted root; verify it through the beacon_chain file that links it",
+        )
+        return 2
+    }
+    println!("FAIL unknown fixture kind")
+    2
+}

@@ -1,0 +1,111 @@
+use core::text::hex
+use core::{MemSpan, MemVec}
+use json::Value
+use std::io::Stdout
+use verifier::{BeaconBlockHeader, BeaconRoot, FULU_FIRST_SLOT}
+use ingot::input::{decimal_field, decimal_u64_field, word_field, word_list}
+
+pub struct Anchor { pub root: BeaconRoot, pub slot: u64 }
+
+impl Copy for Anchor {}
+
+pub enum AnchorOutcome {
+    Proven(Anchor),
+    Refuted,
+    Malformed,
+}
+
+pub struct Proof { pub gindex: u256, pub leaf: u256, pub branch: MemVec<u256> }
+
+fn read_header_fields(_ document: Value) -> Option<(u256, BeaconBlockHeader)> {
+    if document.get("beacon").is_none() {
+        return Option::None
+    }
+    let beacon = ref document["beacon"]
+    let claimed_root = word_field(beacon, "blockRoot")?
+    if beacon.get("header").is_none() {
+        return Option::None
+    }
+    let header_value = ref beacon["header"]
+    Option::Some(
+        (
+            claimed_root,
+            BeaconBlockHeader {
+                slot: decimal_u64_field(header_value, "slot")?,
+                proposer_index: decimal_u64_field(header_value, "proposer_index")?,
+                parent_root: word_field(header_value, "parent_root")?,
+                state_root: word_field(header_value, "state_root")?,
+                body_root: word_field(header_value, "body_root")?,
+            },
+        ),
+    )
+}
+
+pub fn read_anchor(_ document: Value) -> AnchorOutcome uses (out: mut Stdout) {
+    let (claimed_root, header) = match read_header_fields(document) {
+        Option::Some(parsed) => parsed,
+        Option::None => {
+            println!(
+                "FAIL the beacon block root or a header field is missing or not canonical hex",
+            )
+            return AnchorOutcome::Malformed
+        },
+    }
+    println!(
+        "anchor (trusted input): beacon block root 0x",
+        hex(claimed_root, 32),
+    )
+    if header.root() != BeaconRoot::new(claimed_root) {
+        println!(
+            "FAIL the five header fields do not hash to the anchor root",
+        )
+        return AnchorOutcome::Refuted
+    }
+    if header.slot < FULU_FIRST_SLOT {
+        println!(
+            "FAIL slot ",
+            header.slot,
+            " is before the Fulu fork; the positions verified here hold for Fulu only",
+        )
+        return AnchorOutcome::Refuted
+    }
+    println!(
+        "ok   header binds to the anchor: slot ",
+        header.slot,
+        ", proposer ",
+        header.proposer_index,
+    )
+    AnchorOutcome::Proven(
+        Anchor { root: BeaconRoot::new(claimed_root), slot: header.slot },
+    )
+}
+
+pub fn read_proof(_ document: Value, _ field_name: MemSpan) -> Option<Proof> {
+    if document.get("proofs").is_none() {
+        return Option::None
+    }
+    match document["proofs"] {
+        Value::Array(ref proofs) => {
+            var i: usize = 0
+            while i < proofs.len() {
+                let entry = ref proofs[i]
+                let name = ref entry.get("field")?.as_string()?
+                if ingot::input::span_equals(name, field_name) {
+                    if entry.get("branch").is_none() {
+                        return Option::None
+                    }
+                    return Option::Some(
+                        Proof {
+                            gindex: decimal_field(entry, "gindex")?,
+                            leaf: word_field(entry, "leaf")?,
+                            branch: word_list(ref entry["branch"])?,
+                        },
+                    )
+                }
+                i += 1
+            }
+            Option::None
+        },
+        _ => Option::None,
+    }
+}

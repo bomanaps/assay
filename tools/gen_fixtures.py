@@ -40,6 +40,8 @@ import oracle_ssz
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "fixtures"
+CONSENSUS_SPEC = FIXTURES / "consensus_spec"
+SPEC_CASES = 5
 OUT_DIR = ROOT / "src" / "fixtures"
 INDEX = ROOT / "src" / "fixtures.fe"
 MAX_WIDTH = 100
@@ -218,6 +220,112 @@ def render_synthetic(fixture):
     return "".join(parts)
 
 
+def yaml_scalars(path):
+    values = {}
+    for line in path.read_text().splitlines():
+        key, separator, raw = line.partition(": ")
+        if not separator or not key.isidentifier() or key in values:
+            raise SystemExit(f"error: {path}: unexpected line {line!r}")
+        raw = raw.strip()
+        if raw.startswith("'0x") and raw.endswith("'"):
+            values[key] = oracle_mpt.hex_bytes(raw[1:-1])
+        elif raw in ("true", "false"):
+            values[key] = raw == "true"
+        elif raw.isdigit() and (raw == "0" or not raw.startswith("0")):
+            number = int(raw)
+            if number >> 64:
+                raise SystemExit(f"error: {path}: {key} does not fit uint64")
+            values[key] = number
+        else:
+            raise SystemExit(f"error: {path}: unexpected value {raw!r}")
+    return values
+
+
+def spec_case(container, index, keys):
+    directory = CONSENSUS_SPEC / container / f"case_{index}"
+    values = yaml_scalars(directory / "value.yaml")
+    if set(values) != set(keys):
+        raise SystemExit(f"error: {directory}: fields {sorted(values)} differ from {sorted(keys)}")
+    roots = yaml_scalars(directory / "roots.yaml")
+    if set(roots) != {"root"} or len(roots["root"]) != 32:
+        raise SystemExit(f"error: {directory}: roots.yaml must hold one 32-byte root")
+    return values, roots["root"]
+
+
+VALIDATOR_KEYS = ("pubkey", "withdrawal_credentials", "effective_balance", "slashed") + oracle_ssz.VALIDATOR_EPOCHS
+HEADER_KEYS = ("slot", "proposer_index", "parent_root", "state_root", "body_root")
+
+
+def render_spec_vectors():
+    columns = {name: [] for name in ("pubkey_a", "pubkey_b", "credentials", "balance", "slashed", "eligibility", "activation", "exit", "withdrawable", "validator_root", "slot", "proposer", "parent", "state", "body", "header_root")}
+    for index in range(SPEC_CASES):
+        values, root = spec_case("Validator", index, VALIDATOR_KEYS)
+        if len(values["pubkey"]) != 48 or len(values["withdrawal_credentials"]) != 32:
+            raise SystemExit(f"error: Validator case_{index}: wrong byte lengths")
+        parsed = oracle_ssz.parse_validator(
+            {
+                "pubkey": "0x" + values["pubkey"].hex(),
+                "withdrawal_credentials": "0x" + values["withdrawal_credentials"].hex(),
+                "effective_balance": str(values["effective_balance"]),
+                "slashed": values["slashed"],
+                **{name: str(values[name]) for name in oracle_ssz.VALIDATOR_EPOCHS},
+            }
+        )
+        if oracle_ssz.validator_root(parsed) != root:
+            raise SystemExit(f"error: Validator case_{index}: the oracle disagrees with the spec root")
+        padded = values["pubkey"] + bytes(16)
+        columns["pubkey_a"].append(padded[0:32])
+        columns["pubkey_b"].append(padded[32:64])
+        columns["credentials"].append(values["withdrawal_credentials"])
+        columns["balance"].append(values["effective_balance"])
+        columns["slashed"].append(values["slashed"])
+        columns["eligibility"].append(values["activation_eligibility_epoch"])
+        columns["activation"].append(values["activation_epoch"])
+        columns["exit"].append(values["exit_epoch"])
+        columns["withdrawable"].append(values["withdrawable_epoch"])
+        columns["validator_root"].append(root)
+        header_values, header_root_bytes = spec_case("BeaconBlockHeader", index, HEADER_KEYS)
+        parsed_header = oracle_ssz.parse_header(
+            {
+                "slot": str(header_values["slot"]),
+                "proposer_index": str(header_values["proposer_index"]),
+                "parent_root": "0x" + header_values["parent_root"].hex(),
+                "state_root": "0x" + header_values["state_root"].hex(),
+                "body_root": "0x" + header_values["body_root"].hex(),
+            }
+        )
+        if oracle_ssz.header_root(parsed_header) != header_root_bytes:
+            raise SystemExit(f"error: BeaconBlockHeader case_{index}: the oracle disagrees with the spec root")
+        columns["slot"].append(header_values["slot"])
+        columns["proposer"].append(header_values["proposer_index"])
+        columns["parent"].append(header_values["parent_root"])
+        columns["state"].append(header_values["state_root"])
+        columns["body"].append(header_values["body_root"])
+        columns["header_root"].append(header_root_bytes)
+    def u64_array(name, values):
+        return array(name, "u64", [str(v) for v in values])
+    parts = [
+        const("SPEC_CASES", "usize", SPEC_CASES),
+        word_array("SPEC_VALIDATOR_PUBKEY_A", columns["pubkey_a"]),
+        word_array("SPEC_VALIDATOR_PUBKEY_B", columns["pubkey_b"]),
+        word_array("SPEC_VALIDATOR_CREDENTIALS", columns["credentials"]),
+        u64_array("SPEC_VALIDATOR_BALANCE", columns["balance"]),
+        bool_array("SPEC_VALIDATOR_SLASHED", columns["slashed"]),
+        u64_array("SPEC_VALIDATOR_ELIGIBILITY", columns["eligibility"]),
+        u64_array("SPEC_VALIDATOR_ACTIVATION", columns["activation"]),
+        u64_array("SPEC_VALIDATOR_EXIT", columns["exit"]),
+        u64_array("SPEC_VALIDATOR_WITHDRAWABLE", columns["withdrawable"]),
+        word_array("SPEC_VALIDATOR_ROOT", columns["validator_root"]),
+        u64_array("SPEC_HEADER_SLOT", columns["slot"]),
+        u64_array("SPEC_HEADER_PROPOSER", columns["proposer"]),
+        word_array("SPEC_HEADER_PARENT", columns["parent"]),
+        word_array("SPEC_HEADER_STATE", columns["state"]),
+        word_array("SPEC_HEADER_BODY", columns["body"]),
+        word_array("SPEC_HEADER_ROOT", columns["header_root"]),
+    ]
+    return "".join(parts)
+
+
 def expected_files():
     files = {}
     names = []
@@ -242,6 +350,8 @@ def expected_files():
             raise SystemExit(f"error: {path.name}: {type(e).__name__}: {e}")
         files[OUT_DIR / f"{name}.fe"] = text
         names.append(name)
+    files[OUT_DIR / "spec_vectors.fe"] = render_spec_vectors()
+    names.append("spec_vectors")
     files[INDEX] = "".join(f"pub use {name}::{{self}}\n" for name in names)
     return files
 
