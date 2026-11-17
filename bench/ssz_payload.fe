@@ -87,6 +87,31 @@ impl StorageRoot {
     }
 }
 
+pub struct ReceiptsRoot(u256)
+
+impl Copy for ReceiptsRoot {}
+impl Snapshot for ReceiptsRoot {}
+
+impl Eq for ReceiptsRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl ReceiptsRoot {
+    pub const fn new(_ value: u256) -> Self {
+        ReceiptsRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
 pub struct CodeHash(u256)
 
 impl Copy for CodeHash {}
@@ -158,24 +183,38 @@ impl GIndex {
     }
 }
 
-pub struct TrieKey(u256)
+pub struct TrieKey { word: u256, key_nibbles: usize }
 
 impl Copy for TrieKey {}
 impl Snapshot for TrieKey {}
 
 impl Eq for TrieKey {
     const fn eq(self, _ other: Self) -> bool {
-        self.0 == other.0
+        self.word == other.word && self.key_nibbles == other.key_nibbles
     }
 }
 
 impl TrieKey {
     pub const fn new(_ value: u256) -> Self {
-        TrieKey(value)
+        TrieKey { word: value, key_nibbles: 64 }
+    }
+
+    pub fn short(_ word: u256, _ nibbles: usize) -> Self {
+        core::assert(nibbles > 0)
+        core::assert(nibbles <= 64)
+        core::assert(nibbles % 2 == 0)
+        if nibbles < 64 {
+            core::assert(word << (4 * nibbles as u256) == 0)
+        }
+        TrieKey { word, key_nibbles: nibbles }
     }
 
     pub const fn value(self) -> u256 {
-        self.0
+        self.word
+    }
+
+    pub const fn nibbles(self) -> usize {
+        self.key_nibbles
     }
 }
 
@@ -422,6 +461,7 @@ pub const HEADER_STATE_ROOT: u256 = field(HEADER_FIELDS, 3)
 pub const HEADER_BODY_ROOT: u256 = field(HEADER_FIELDS, 4)
 pub const EXECUTION_PAYLOAD: u256 = concat(HEADER_BODY_ROOT, field(BODY_FIELDS, 9))
 pub const PAYLOAD_STATE_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 2))
+pub const PAYLOAD_RECEIPTS_ROOT: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 3))
 pub const PAYLOAD_BLOCK_NUMBER: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 6))
 pub const PAYLOAD_BLOCK_HASH: u256 = concat(EXECUTION_PAYLOAD, field(PAYLOAD_FIELDS, 12))
 pub const STATE_GENESIS_VALIDATORS_ROOT: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 1))
@@ -434,6 +474,7 @@ pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_F
 static_assert(HEADER_STATE_ROOT == 11)
 static_assert(HEADER_BODY_ROOT == 12)
 static_assert(PAYLOAD_STATE_ROOT == 6434)
+static_assert(PAYLOAD_RECEIPTS_ROOT == 6435)
 static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
 static_assert(PAYLOAD_BLOCK_HASH == 6444)
 static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
@@ -441,6 +482,7 @@ static_assert(STATE_FORK_CURRENT_VERSION == 2829)
 
 pub enum PayloadField {
     StateRoot,
+    ReceiptsRoot,
     BlockNumber,
     BlockHash,
 }
@@ -450,6 +492,7 @@ impl PayloadField {
         GIndex::new(
             match self {
                 Self::StateRoot => PAYLOAD_STATE_ROOT,
+                Self::ReceiptsRoot => PAYLOAD_RECEIPTS_ROOT,
                 Self::BlockNumber => PAYLOAD_BLOCK_NUMBER,
                 Self::BlockHash => PAYLOAD_BLOCK_HASH,
             },
@@ -570,6 +613,20 @@ impl Validator {
     }
 }
 
+pub fn verify_execution_receipts_root<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    receipts_root: u256,
+    branch: P,
+) -> Result<ProofError, ReceiptsRoot> {
+    verify_payload_field(
+        beacon_root,
+        which: PayloadField::ReceiptsRoot,
+        leaf: receipts_root,
+        branch,
+    )?
+    Result::Ok(ReceiptsRoot::new(receipts_root))
+}
+
 pub fn verify_payload_field<P: ProofNodes>(
     beacon_root: BeaconRoot,
     which: PayloadField,
@@ -669,24 +726,24 @@ pub fn load_packed<const N: usize>(_ words: [u256; N], len: usize) -> MemBuffer 
     buffer
 }
 
-const BENCH_ROOT: u256 = 0x3ec720822100d91842037f7698aaeb2db6493ff04b556809e3a2bc64b9228302
+const BENCH_ROOT: u256 = 0x23f319a512d5759f05c379773d852235fcd24d65cede43d5e7ce7cfc896ba764
 const BENCH_GINDEX: u256 = 6434
 const BENCH_BRANCH: [u256; 12] = [
-    0x4406de065da5cb280e4db0c154bdd90e760389203805ec26a8fe004231c04356,
-    0x0dc57d46195a8cee42a3fd9a2ce2ac261dc523b8e3f001d8272d0342911b7610,
-    0xd4ca481f937fe6c42d88f8e23e866da2fc53119e744aceabd6f1b29fd400a0a6,
-    0x0f6d6461c0a45cfd558c939adce1e500bd9076eb2d9562e705ca0f8f5f125753,
-    0x47246155ab1508efbbf138c334c635f3c8a2d534eabc5bed04c4ff681e6804bc,
-    0x790282b5a9620cf8549b74bbb22a731f8ebd80c8395f586c95f32e9e34937e27,
-    0xc660f7829ac2e3cad112f2540d7a4bbf709352d731611cd7a3ad4893bb3367c4,
+    0x392274c89b08364c350a5646aacb1eeb6c1b830875e68575b399065a508ecfc5,
+    0x07e3f85d08087c8b4e7c60229868bccdf1328a6746a656b7007239f1b58d9619,
+    0x6bd06817b8f6e02345c1f7bf5ee218b2516cbc0cc4904c1960ef0485f971a0ce,
+    0xb5a0974cefe5906f3adeb91ac4cefacc70b53e02da1d3c3d62768aa64f501b50,
+    0x409ffc71d87e84874c7d592f8cb63ee196023f9bf0f371fe37a99b55202fe226,
+    0xc64d90a12345965a5b0aa98f92fe9597bcba6357be13dcf45e537fc8504a48ee,
+    0xb8e08cea29ff5c22b21406a0a65f68fa7acb6c97d7529c63980317d1b40424f9,
     0x6dd3b9955d892d92338b19976fd07084bfe88a76c3063482b7f30ee60feb2a58,
-    0xb9e260fda6bd48a646f62debc84f8cbd6e856af2ac0e7c314c94691094dd9b46,
+    0x43b02549b8093d4aaf48e9bc94e1346c120d20a566aa73063530e88b9c7941dc,
     0x0000000000000000000000000000000000000000000000000000000000000000,
     0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b,
-    0xa6793960b09d8ad5ba4a9229389e4c46ede29b0b620afeb3f9bb073a4cd1c0c9,
+    0x4012a78190ea42ab120cd2f4414ca8ce9a57444ccd029477e017ad71eac6c835,
 ]
 const BENCH_DEPTH: usize = 12
-const BENCH_LEAF: u256 = 0x51502b02719e78d7daec6ec98b6ddea37da89578d0081aedca12263be6e2c312
+const BENCH_LEAF: u256 = 0xbaf378b9cb94e38ca206f463940157354e5c9306175d6eb0376c44fa7150a8e7
 
 pub msg BenchMsg {
     #[selector = sol("verify()")]

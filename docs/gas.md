@@ -27,14 +27,14 @@ Both the vendored SSZ verifier and Lido's Community Staking Module verifier are 
 
 | Fixture | Fe verify | Fe baseline | Fe net | Sol best verify | Sol best baseline | Sol net | Fe net vs Sol net |
 |---|---|---|---|---|---|---|---|
-| mpt_account (USDC account, 9 nodes, 3,847 proof bytes) | 254,425 | 33,924 | 220,501 | 856,823 | 25,818 | 831,005 | -73% |
+| mpt_account (USDC account, 9 nodes, 3,847 proof bytes) | 252,861 | 33,931 | 218,930 | 856,823 | 25,818 | 831,005 | -74% |
 | mpt_storage (WETH slot 0, 7 nodes) | 198,123 | 30,854 | 167,269 | 639,081 | 24,930 | 614,151 | -73% |
 | ssz_payload (12-level branch) | 29,202 | 23,122 | 6,080 | 29,041 | 24,678 | 4,363 | +39% |
 | ssz_validator (validator record root + 50-level branch) | 60,217 | 32,647 | 27,570 | 52,858 | 36,089 | 16,769 | +64% |
 
 Reading guide:
 
-- The Merkle-Patricia verifier is 3.2x to 3.4x cheaper than Polytope's generic trie library on raw calls and about 3.7x cheaper net of setup. Both sides verify the same mainnet proofs against the same roots and check the resulting values.
+- The Merkle-Patricia verifier is 3.2x to 3.4x cheaper than Polytope's generic trie library on raw calls and 3.7x to 3.8x cheaper net of setup. Both sides verify the same mainnet proofs against the same roots and check the resulting values.
 - The SSZ raw calls are within 0.6% (payload) and 14% (validator) of the baseline. Net of setup the baseline wins, because it is hand-tuned assembly from Solady while Assay's verifier is ordinary high-level Fe; the absolute difference is 1.7k to 10.8k gas per call.
 - Both validator baselines build the record and compute its hash tree root, so the net numbers isolate the 50-level branch walk on each side.
 - The Solidity SSZ baseline must receive its branch as calldata, so both of its calls make one external self-call; its baseline subtracts that overhead.
@@ -51,8 +51,8 @@ Measured inside `fe test` with `evm.gas()` around a real call to the deployed `B
 
 | Call | Gas at -O 1 | Gas at -O 2 | What it covers |
 |---|---|---|---|
-| `proveStorage` (USDC slot 0) | 451,490 | 449,208 | 4788 lookup, header root, 12-level SSZ branch, account trie (9 nodes), storage trie (8 nodes), full ABI decode |
-| `proveValidator` (whole record) | 38,770 | 38,417 | 4788 lookup, header root, pubkey root, record root, 50-level SSZ branch |
+| `proveStorage` (USDC slot 0) | 452,487 | 450,267 | 4788 lookup, header root, 12-level SSZ branch, account trie (9 nodes), storage trie (8 nodes), full ABI decode |
+| `proveValidator` (whole record) | 38,511 | 38,158 | 4788 lookup, header root, pubkey root, record root, 50-level SSZ branch |
 
 `src/tests/gas_tests.fe` keeps both calls inside recorded bands (300k-600k and 25k-60k), so a large regression fails the suite.
 

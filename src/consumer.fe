@@ -5,7 +5,10 @@ use std::evm::{Address, Call, Ctx, revert_error}
 use ingot::{
     bytes48_leaf,
     verify_account,
+    verify_execution_receipts_root,
     verify_execution_state_root,
+    verify_log,
+    verify_receipt,
     verify_storage,
     verify_validator,
     AccountState,
@@ -61,6 +64,9 @@ pub struct BeaconRootsWithoutCode { pub roots: Address }
 #[error]
 pub struct InvalidProof { pub code: u8 }
 
+#[error]
+pub struct ReceiptAbsent { pub tx_index: u64 }
+
 pub msg ProverMsg {
     #[selector = sol(
         "proveStorage(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32[],address,bytes[],uint256,bytes[])",
@@ -85,6 +91,29 @@ pub msg ProverMsg {
         validator: ValidatorRecord,
         branch: DynArray<Bytes32>,
     } -> u64,
+    #[selector = sol(
+        "proveReceipt(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32[],uint64,bytes[])",
+    )]
+    ProveReceipt {
+        timestamp: u64,
+        header: Header,
+        receipts_root: Bytes32,
+        receipts_root_branch: DynArray<Bytes32>,
+        tx_index: u64,
+        receipt_nodes: DynArray<Bytes>,
+    } -> (bool, u64, u64, u64, u64),
+    #[selector = sol(
+        "proveLog(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32[],uint64,uint64,bytes[])",
+    )]
+    ProveLog {
+        timestamp: u64,
+        header: Header,
+        receipts_root: Bytes32,
+        receipts_root_branch: DynArray<Bytes32>,
+        tx_index: u64,
+        log_index: u64,
+        receipt_nodes: DynArray<Bytes>,
+    } -> (u256, u64, Bytes32, Bytes32, Bytes32, Bytes32, Bytes32, u64, u64),
 }
 
 static_assert(<ProverMsg::ProveStorage as MsgVariant<Sol>>::SELECTOR
@@ -108,6 +137,35 @@ static_assert(<ProverMsg::ProveValidator as MsgVariant<Sol>>::SELECTOR
         (
             "proveValidator",
             <(u64, Header, u64, ValidatorRecord, DynArray<Bytes32>) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+static_assert(<ProverMsg::ProveReceipt as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "proveReceipt",
+            <(
+                u64,
+                Header,
+                Bytes32,
+                DynArray<Bytes32>,
+                u64,
+                DynArray<Bytes>,
+            ) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+static_assert(<ProverMsg::ProveLog as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "proveLog",
+            <(
+                u64,
+                Header,
+                Bytes32,
+                DynArray<Bytes32>,
+                u64,
+                u64,
+                DynArray<Bytes>,
+            ) as SolCompat>::SOL_TYPE,
         ),
     ))
 
@@ -246,6 +304,94 @@ pub contract BeaconProver uses (call: Call, ctx: Ctx) {
                 ),
             )
             (value, header.slot)
+        }
+
+        ProveReceipt {
+            timestamp,
+            header,
+            receipts_root,
+            receipts_root_branch,
+            tx_index,
+            receipt_nodes,
+        } -> (bool, u64, u64, u64, u64)
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            let anchored = checked(
+                verify_execution_receipts_root(
+                    beacon_root: root,
+                    receipts_root: receipts_root.val,
+                    branch: receipts_root_branch,
+                ),
+            )
+            let summary = match checked(
+                verify_receipt(
+                    receipts_root: anchored,
+                    tx_index,
+                    nodes: receipt_nodes.to_mem_array(),
+                ),
+            ) {
+                Proven::Present(summary) => summary,
+                Proven::Absent => revert_error(ReceiptAbsent { tx_index }),
+            }
+            (
+                summary.succeeded,
+                summary.cumulative_gas,
+                summary.tx_type as u64,
+                summary.log_count.downcast_truncate(),
+                header.slot,
+            )
+        }
+
+        ProveLog {
+            timestamp,
+            header,
+            receipts_root,
+            receipts_root_branch,
+            tx_index,
+            log_index,
+            receipt_nodes,
+        } -> (u256, u64, Bytes32, Bytes32, Bytes32, Bytes32, Bytes32, u64, u64)
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            let anchored = checked(
+                verify_execution_receipts_root(
+                    beacon_root: root,
+                    receipts_root: receipts_root.val,
+                    branch: receipts_root_branch,
+                ),
+            )
+            let log_position: usize = match log_index.downcast() {
+                Option::Some(log_position) => log_position,
+                Option::None => {
+                    revert_error(
+                        InvalidProof { code: proof_error_code(ProofError::IndexOutOfRange) },
+                    )
+                },
+            }
+            let claim = match checked(
+                verify_log(
+                    receipts_root: anchored,
+                    tx_index,
+                    log_index: log_position,
+                    nodes: receipt_nodes.to_mem_array(),
+                ),
+            ) {
+                Proven::Present(claim) => claim,
+                Proven::Absent => revert_error(ReceiptAbsent { tx_index }),
+            }
+            (
+                claim.address,
+                claim.topic_count.downcast_truncate(),
+                Bytes32 { val: claim.topics[0] },
+                Bytes32 { val: claim.topics[1] },
+                Bytes32 { val: claim.topics[2] },
+                Bytes32 { val: claim.topics[3] },
+                Bytes32 { val: claim.data_hash },
+                claim.data_len.downcast_truncate(),
+                header.slot,
+            )
         }
 
         ProveValidator { timestamp, header, index, validator, branch } -> u64

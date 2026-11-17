@@ -1,5 +1,6 @@
 pub use account::{decode_account, verify_account}
 pub use beacon::{
+    verify_execution_receipts_root,
     verify_execution_state_root,
     verify_payload_field,
     verify_state_field,
@@ -34,6 +35,15 @@ pub use example::{
     INELIGIBLE_SLASHED,
 }
 pub use mpt::{verify_trie, Leaf, NodeList, ProofNodes}
+pub use receipt::{
+    decode_receipt_log,
+    decode_receipt_summary,
+    receipt_key,
+    verify_log,
+    verify_receipt,
+    LogClaim,
+    ReceiptSummary,
+}
 pub use ssz::{bytes48_leaf, hash_pair, verify_branch, Branch}
 pub use storage::{decode_storage_value, verify_storage}
 pub use types::{
@@ -43,6 +53,7 @@ pub use types::{
     GIndex,
     ProofError,
     Proven,
+    ReceiptsRoot,
     Root,
     StateRoot,
     StorageRoot,

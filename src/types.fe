@@ -80,6 +80,31 @@ impl StorageRoot {
     }
 }
 
+pub struct ReceiptsRoot(u256)
+
+impl Copy for ReceiptsRoot {}
+impl Snapshot for ReceiptsRoot {}
+
+impl Eq for ReceiptsRoot {
+    const fn eq(self, _ other: Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl ReceiptsRoot {
+    pub const fn new(_ value: u256) -> Self {
+        ReceiptsRoot(value)
+    }
+
+    pub const fn value(self) -> u256 {
+        self.0
+    }
+
+    pub const fn as_root(self) -> Root {
+        Root(self.0)
+    }
+}
+
 pub struct CodeHash(u256)
 
 impl Copy for CodeHash {}
@@ -151,24 +176,38 @@ impl GIndex {
     }
 }
 
-pub struct TrieKey(u256)
+pub struct TrieKey { word: u256, key_nibbles: usize }
 
 impl Copy for TrieKey {}
 impl Snapshot for TrieKey {}
 
 impl Eq for TrieKey {
     const fn eq(self, _ other: Self) -> bool {
-        self.0 == other.0
+        self.word == other.word && self.key_nibbles == other.key_nibbles
     }
 }
 
 impl TrieKey {
     pub const fn new(_ value: u256) -> Self {
-        TrieKey(value)
+        TrieKey { word: value, key_nibbles: 64 }
+    }
+
+    pub fn short(_ word: u256, _ nibbles: usize) -> Self {
+        core::assert(nibbles > 0)
+        core::assert(nibbles <= 64)
+        core::assert(nibbles % 2 == 0)
+        if nibbles < 64 {
+            core::assert(word << (4 * nibbles as u256) == 0)
+        }
+        TrieKey { word, key_nibbles: nibbles }
     }
 
     pub const fn value(self) -> u256 {
-        self.0
+        self.word
+    }
+
+    pub const fn nibbles(self) -> usize {
+        self.key_nibbles
     }
 }
 

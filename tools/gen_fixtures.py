@@ -36,6 +36,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import oracle_mpt
+import oracle_receipt
 import oracle_ssz
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -163,7 +164,9 @@ def render_beacon(fixture):
     ]
     proofs = result["proofs"]
     if result["kind"] == "beacon_chain":
-        names = CHAIN_PROOFS
+        names = dict(CHAIN_PROOFS)
+        if "execution_payload.receipts_root" in proofs:
+            names["execution_payload.receipts_root"] = "PAYLOAD_RECEIPTS_ROOT"
     else:
         record = result["record"]
         parts += [
@@ -326,6 +329,40 @@ def render_spec_vectors():
     return "".join(parts)
 
 
+def render_receipt(fixture):
+    result = oracle_receipt.analyze(fixture)
+    node_bytes, node_offsets, _ = concatenate([result["nodes"]])
+    parts = [
+        const("RECEIPTS_ROOT", "u256", word(result["receipts_root"])),
+        const("TX_INDEX", "u64", result["index"]),
+        const("PRESENT", "bool", "true" if result["present"] else "false"),
+        const("NODE_COUNT", "usize", len(result["nodes"])),
+        usize_array("NODE_OFFSETS", node_offsets),
+        byte_array("NODE_BYTES", node_bytes),
+    ]
+    if result["present"]:
+        receipt = result["receipt"]
+        parts += [
+            const("SUCCEEDED", "bool", "true" if receipt["succeeded"] else "false"),
+            const("CUMULATIVE_GAS", "u64", receipt["cumulative_gas"]),
+            const("TX_TYPE", "u8", receipt["tx_type"]),
+            const("LOG_COUNT", "usize", len(receipt["logs"])),
+        ]
+        if "log_index" in result:
+            log = receipt["logs"][result["log_index"]]
+            topics = [int.from_bytes(t, "big") for t in log["topics"]]
+            topics += [0] * (4 - len(log["topics"]))
+            parts += [
+                const("LOG_INDEX", "usize", result["log_index"]),
+                const("LOG_ADDRESS", "u256", int.from_bytes(log["address"], "big")),
+                const("LOG_TOPIC_COUNT", "usize", len(log["topics"])),
+                array("LOG_TOPICS", "u256", [str(t) for t in topics]),
+                const("LOG_DATA_HASH", "u256", int.from_bytes(oracle_mpt.keccak256(log["data"]), "big")),
+                const("LOG_DATA_LEN", "usize", len(log["data"])),
+            ]
+    return "".join(parts)
+
+
 def expected_files():
     files = {}
     names = []
@@ -342,11 +379,13 @@ def expected_files():
                 text = render_trie(fixture)
             elif kind in oracle_ssz.BEACON_KINDS:
                 text = render_beacon(fixture)
+            elif kind == "receipt":
+                text = render_receipt(fixture)
             elif kind == oracle_mpt.SYNTHETIC_KIND:
                 text = render_synthetic(fixture)
             else:
                 raise ValueError(f"unknown fixture kind {kind!r}")
-        except (oracle_mpt.ProofError, oracle_ssz.CheckError, KeyError, TypeError, ValueError) as e:
+        except (oracle_mpt.ProofError, oracle_ssz.CheckError, oracle_receipt.ReceiptError, KeyError, TypeError, ValueError) as e:
             raise SystemExit(f"error: {path.name}: {type(e).__name__}: {e}")
         files[OUT_DIR / f"{name}.fe"] = text
         names.append(name)

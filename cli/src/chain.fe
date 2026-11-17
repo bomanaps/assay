@@ -7,13 +7,16 @@ use std::io::Stdout
 use verifier::{
     verify_account,
     verify_execution_state_root,
+    verify_log,
     verify_payload_field,
+    verify_receipt,
     verify_storage,
     AccountState,
     GIndex,
     NodeList,
     PayloadField,
     Proven,
+    ReceiptsRoot,
     StateRoot,
     StorageRoot,
     EMPTY_CODE_HASH,
@@ -31,6 +34,7 @@ use ingot::input::{
 }
 
 const STATE_ROOT_FIELD: String<28> = "execution_payload.state_root"
+const RECEIPTS_ROOT_FIELD: String<31> = "execution_payload.receipts_root"
 const BLOCK_NUMBER_FIELD: String<30> = "execution_payload.block_number"
 const BLOCK_HASH_FIELD: String<28> = "execution_payload.block_hash"
 
@@ -96,7 +100,7 @@ uses (out: mut Stdout)
     }
 }
 
-struct ExecutionClaims { state_root: u256, number_leaf: u256, hash: u256 }
+struct ExecutionClaims { state_root: u256, receipts_root: u256, number_leaf: u256, hash: u256 }
 
 fn read_execution_claims(_ header: Value) -> Option<ExecutionClaims> {
     let number = quantity_field(header, "number")?
@@ -106,6 +110,7 @@ fn read_execution_claims(_ header: Value) -> Option<ExecutionClaims> {
     Option::Some(
         ExecutionClaims {
             state_root: word_field(header, "stateRoot")?,
+            receipts_root: word_field(header, "receiptsRoot")?,
             number_leaf: u64_chunk(number.downcast_truncate()),
             hash: word_field(header, "hash")?,
         },
@@ -384,6 +389,47 @@ uses (fs: Fs, out: mut Stdout)
         },
     }
     let state_root = StateRoot::new(state_root_leaf)
+    var receipts_verified: usize = 0
+    if execution.get("receiptFixtures").is_some() {
+        let receipts_root_name = ingot::input::string_buffer(RECEIPTS_ROOT_FIELD)
+        let receipts_root_leaf = match payload_proof(
+            document,
+            receipts_root_name.span(),
+            which: PayloadField::ReceiptsRoot,
+            anchor,
+            claimed: claims.receipts_root,
+        ) {
+            Result::Ok(leaf) => leaf,
+            Result::Err(code) => {
+                return code
+            },
+        }
+        let receipts_root = ReceiptsRoot::new(receipts_root_leaf)
+        match execution["receiptFixtures"] {
+            Value::Array(ref names) => {
+                if names.len() == 0 {
+                    println!("FAIL the file links no receipt fixtures")
+                    return 2
+                }
+                var i: usize = 0
+                while i < names.len() {
+                    let code = verify_receipt_link(
+                        ref names[i],
+                        position: i,
+                        input_path,
+                        receipts_root,
+                    )
+                    if code != 0 { return code }
+                    i += 1
+                }
+                receipts_verified = names.len()
+            },
+            _ => {
+                println!("FAIL receiptFixtures is not an array")
+                return 2
+            },
+        }
+    }
     if execution.get("mptFixtures").is_none() {
         println!("FAIL the file lists no mptFixtures")
         return 2
@@ -402,6 +448,13 @@ uses (fs: Fs, out: mut Stdout)
                 if code != 0 { return code }
                 slots += counted
                 i += 1
+            }
+            if receipts_verified > 0 {
+                println!(
+                    "ok   ",
+                    receipts_verified,
+                    " linked receipt fixtures proven against the same anchored receipts root",
+                )
             }
             println!(
                 "verified: ",
@@ -434,6 +487,267 @@ fn plain_fixture_name(_ name: MemSpan) -> bool {
         i += 1
     }
     true
+}
+
+struct ReceiptClaims { succeeded: u256, cumulative_gas: u256, tx_type: u256, log_count: u256 }
+
+fn parse_receipt_claims(_ claims: Value) -> Option<ReceiptClaims> {
+    Option::Some(
+        ReceiptClaims {
+            succeeded: quantity_field(claims, "succeeded")?,
+            cumulative_gas: quantity_field(claims, "cumulativeGas")?,
+            tx_type: quantity_field(claims, "txType")?,
+            log_count: quantity_field(claims, "logCount")?,
+        },
+    )
+}
+
+fn verify_receipt_log(
+    _ document: Value,
+    _ name: MemSpan,
+    receipts_root: ReceiptsRoot,
+    tx_index: u64,
+) -> Option<bool>
+uses (out: mut Stdout)
+{
+    let log = ref document["log"]
+    let log_index = quantity_field(log, "index")?
+    let claimed_address = word20_field(log, "address")?
+    let claimed_data_hash = word_field(log, "dataHash")?
+    let claimed_data_len = quantity_field(log, "dataLen")?
+    if log.get("topics").is_none() {
+        return Option::None
+    }
+    let nodes = node_list(ref document["proof"])?
+    let index_small: usize = log_index.downcast()?
+    let claim = match verify_log(receipts_root, tx_index, log_index: index_small, nodes) {
+        Result::Ok(Proven::Present(claim)) => claim,
+        _ => {
+            println!("FAIL ", name, ": log proof rejected")
+            return Option::Some(false)
+        },
+    }
+    if claim.address != claimed_address
+        || claim.data_hash != claimed_data_hash
+        || claim.data_len as u256 != claimed_data_len {
+        println!(
+            "FAIL ",
+            name,
+            ": proven log disagrees with the file's claims",
+        )
+        return Option::Some(false)
+    }
+    match log["topics"] {
+        Value::Array(ref topics) => {
+            if topics.len() != claim.topic_count {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": proven topic count disagrees with the file",
+                )
+                return Option::Some(false)
+            }
+            var i: usize = 0
+            while i < topics.len() {
+                let claimed_topic = match topics[i].as_string() {
+                    Option::Some(ref text) => parse_hex_fixed(text, len: 32),
+                    Option::None => Option::None,
+                }
+                match claimed_topic {
+                    Option::Some(ref bytes) => {
+                        if claim.topics[i] != bytes.span().read_word(0) {
+                            println!(
+                                "FAIL ",
+                                name,
+                                ": proven topic ",
+                                i,
+                                " disagrees with the file",
+                            )
+                            return Option::Some(false)
+                        }
+                    },
+                    Option::None => {
+                        return Option::None
+                    },
+                }
+                i += 1
+            }
+            println!(
+                "ok   ",
+                name,
+                ": log ",
+                log_index,
+                " proven, address 0x",
+                hex(claim.address, 20),
+                ", ",
+                claim.topic_count,
+                " topics, ",
+                claim.data_len,
+                " data bytes",
+            )
+            Option::Some(true)
+        },
+        _ => Option::None,
+    }
+}
+
+fn word20_field(_ object: Value, _ key: String<7>) -> Option<u256> {
+    let text = string_field(object, key)?
+    let bytes = parse_hex_fixed(text, len: 20)?
+    var value: u256 = 0
+    var i: usize = 0
+    while i < 20 {
+        value = (value << 8) | (bytes.span().byte_at(i) as u256)
+        i += 1
+    }
+    Option::Some(value)
+}
+
+fn verify_receipt_file(_ document: Value, _ name: MemSpan, receipts_root: ReceiptsRoot) -> Option<
+    bool,
+>
+uses (out: mut Stdout)
+{
+    let header_root = match document.get("header") {
+        Option::Some(ref header) => word_field(header, "receiptsRoot"),
+        Option::None => Option::None,
+    }
+    if header_root != Option::Some(receipts_root.value()) {
+        println!(
+            "FAIL ",
+            name,
+            ": captured at a different receipts root than the proven one",
+        )
+        return Option::Some(false)
+    }
+    let tx_index_value = quantity_field(document, "txIndex")?
+    let tx_index: u64 = tx_index_value.downcast()?
+    if document.get("proof").is_none() {
+        return Option::None
+    }
+    let nodes = node_list(ref document["proof"])?
+    let outcome = match verify_receipt(receipts_root, tx_index, nodes) {
+        Result::Ok(outcome) => outcome,
+        Result::Err(_) => {
+            println!("FAIL ", name, ": receipt proof rejected")
+            return Option::Some(false)
+        },
+    }
+    match outcome {
+        Proven::Present(summary) => {
+            if document.get("receipt").is_none() {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": the trie proves receipt ",
+                    tx_index,
+                    ", the file claims none",
+                )
+                return Option::Some(false)
+            }
+            let claims = match parse_receipt_claims(ref document["receipt"]) {
+                Option::Some(claims) => claims,
+                Option::None => {
+                    return Option::None
+                },
+            }
+            let succeeded_claim = claims.succeeded == 1
+            if summary.succeeded != succeeded_claim
+                || summary.cumulative_gas as u256 != claims.cumulative_gas
+                || summary.tx_type as u256 != claims.tx_type
+                || summary.log_count as u256 != claims.log_count {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": decoded receipt disagrees with the file's claims",
+                )
+                return Option::Some(false)
+            }
+            println!(
+                "ok   ",
+                name,
+                ": receipt ",
+                tx_index,
+                " proven, status ",
+                if summary.succeeded { 1 as u8 } else { 0 as u8 },
+                ", cumulative gas ",
+                summary.cumulative_gas,
+                ", ",
+                summary.log_count,
+                " logs",
+            )
+            if document.get("log").is_some() {
+                return verify_receipt_log(document, name, receipts_root, tx_index)
+            }
+            Option::Some(true)
+        },
+        Proven::Absent => {
+            if document.get("receipt").is_some() || document.get("log").is_some() {
+                println!(
+                    "FAIL ",
+                    name,
+                    ": the trie proves receipt ",
+                    tx_index,
+                    " absent, the file claims otherwise",
+                )
+                return Option::Some(false)
+            }
+            println!("ok   ", name, ": receipt ", tx_index, " proven absent")
+            Option::Some(true)
+        },
+    }
+}
+
+fn verify_receipt_link(
+    _ entry: Value,
+    position: usize,
+    input_path: MemSpan,
+    receipts_root: ReceiptsRoot,
+) -> i32
+uses (fs: Fs, out: mut Stdout)
+{
+    match entry.as_string() {
+        Option::Some(ref name) => {
+            if !plain_fixture_name(name) {
+                println!(
+                    "FAIL receiptFixtures entry ",
+                    position,
+                    " is not a plain fixture name",
+                )
+                return 2
+            }
+            let path = sibling_path(input_path, name)
+            let bytes = match fs.read(path.span()) {
+                Result::Ok(bytes) => bytes,
+                Result::Err(_) => {
+                    println!("FAIL cannot read ", path)
+                    return 2
+                },
+            }
+            let parsed = match json::parse(bytes.span()) {
+                Result::Ok(parsed) => parsed,
+                Result::Err(_) => {
+                    println!("FAIL ", path, " is not JSON")
+                    return 2
+                },
+            }
+            match verify_receipt_file(parsed, name, receipts_root) {
+                Option::Some(passed) => if passed { 0 } else { 1 },
+                Option::None => {
+                    println!("FAIL ", name, ": malformed receipt fixture")
+                    2
+                },
+            }
+        },
+        Option::None => {
+            println!(
+                "FAIL receiptFixtures entry ",
+                position,
+                " is not a string",
+            )
+            2
+        },
+    }
 }
 
 fn verify_linked_file(

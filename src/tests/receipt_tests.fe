@@ -1,0 +1,342 @@
+use ingot::fixtures::{
+    chain_beacon as c,
+    chain_receipt_absent as ra,
+    chain_receipt_last as rr,
+    chain_receipt_logged as rl,
+}
+use ingot::{
+    receipt_key,
+    verify_log,
+    verify_receipt,
+    BeaconBlockHeader,
+    BeaconProver,
+    Header,
+    InvalidProof,
+    NodeList,
+    ProofError,
+    ProofNodes,
+    ProverMsg,
+    Proven,
+    ReceiptsRoot,
+    TrieKey,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes, Bytes32, DynArray}
+use std::evm::{Address, CallOutcome, Evm, RawOps, is_error}
+
+fn logged_nodes() -> NodeList {
+    NodeList::from_fixture(
+        rl::NODE_BYTES,
+        rl::NODE_OFFSETS,
+        first: 0,
+        count: rl::NODE_COUNT,
+    )
+}
+
+fn last_nodes() -> NodeList {
+    NodeList::from_fixture(
+        rr::NODE_BYTES,
+        rr::NODE_OFFSETS,
+        first: 0,
+        count: rr::NODE_COUNT,
+    )
+}
+
+fn absent_nodes() -> NodeList {
+    NodeList::from_fixture(
+        ra::NODE_BYTES,
+        ra::NODE_OFFSETS,
+        first: 0,
+        count: ra::NODE_COUNT,
+    )
+}
+
+fn root() -> ReceiptsRoot {
+    ReceiptsRoot::new(rl::RECEIPTS_ROOT)
+}
+
+#[test]
+fn receipt_keys_are_canonical_rlp_of_the_index() {
+    core::assert(receipt_key(0) == TrieKey::short(0x80 << 248, 2))
+    core::assert(receipt_key(1) == TrieKey::short(0x01 << 248, 2))
+    core::assert(receipt_key(0x7f) == TrieKey::short(0x7f << 248, 2))
+    core::assert(
+        receipt_key(0x80) == TrieKey::short((0x8180 as u256) << 240, 4),
+    )
+    core::assert(
+        receipt_key(0x0100) == TrieKey::short((0x820100 as u256) << 232, 6),
+    )
+    core::assert(
+        receipt_key(0xffff) == TrieKey::short((0x82ffff as u256) << 232, 6),
+    )
+}
+
+#[test]
+fn the_logged_receipt_verifies_with_its_recorded_summary() {
+    match verify_receipt(
+        receipts_root: root(),
+        rl::TX_INDEX,
+        nodes: logged_nodes(),
+    ) {
+        Result::Ok(Proven::Present(summary)) => {
+            core::assert(summary.succeeded == rl::SUCCEEDED)
+            core::assert(summary.cumulative_gas == rl::CUMULATIVE_GAS)
+            core::assert(summary.tx_type == rl::TX_TYPE)
+            core::assert(summary.log_count == rl::LOG_COUNT)
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn the_logged_receipts_first_log_verifies_field_by_field() {
+    match verify_log(
+        receipts_root: root(),
+        rl::TX_INDEX,
+        log_index: rl::LOG_INDEX,
+        nodes: logged_nodes(),
+    ) {
+        Result::Ok(Proven::Present(claim)) => {
+            core::assert(claim.address == rl::LOG_ADDRESS)
+            core::assert(claim.topic_count == rl::LOG_TOPIC_COUNT)
+            var i: usize = 0
+            while i < 4 {
+                core::assert(claim.topics[i] == rl::LOG_TOPICS[i])
+                i += 1
+            }
+            core::assert(claim.data_hash == rl::LOG_DATA_HASH)
+            core::assert(claim.data_len == rl::LOG_DATA_LEN)
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn the_last_receipt_of_the_block_verifies() {
+    match verify_receipt(receipts_root: root(), rr::TX_INDEX, nodes: last_nodes()) {
+        Result::Ok(Proven::Present(summary)) => {
+            core::assert(summary.succeeded == rr::SUCCEEDED)
+            core::assert(summary.cumulative_gas == rr::CUMULATIVE_GAS)
+            core::assert(summary.log_count == rr::LOG_COUNT)
+        },
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_receipt_past_the_block_is_proven_absent() {
+    core::assert(!ra::PRESENT)
+    match verify_receipt(
+        receipts_root: root(),
+        ra::TX_INDEX,
+        nodes: absent_nodes(),
+    ) {
+        Result::Ok(Proven::Absent) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_log_index_past_the_receipt_is_refused() {
+    match verify_log(
+        receipts_root: root(),
+        rl::TX_INDEX,
+        log_index: rl::LOG_COUNT,
+        nodes: logged_nodes(),
+    ) {
+        Result::Err(ProofError::IndexOutOfRange) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_flipped_byte_anywhere_breaks_the_receipt_proof() {
+    var nodes = logged_nodes()
+    nodes.flip_byte(node: rl::NODE_COUNT - 1, at: 10)
+    match verify_receipt(receipts_root: root(), rl::TX_INDEX, nodes) {
+        Result::Err(ProofError::HashMismatch(_)) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_truncated_receipt_proof_never_reads_as_absence() {
+    var nodes = logged_nodes()
+    nodes.drop_last()
+    match verify_receipt(receipts_root: root(), rl::TX_INDEX, nodes) {
+        Result::Err(_) => {},
+        Result::Ok(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn trailing_nodes_after_the_receipt_leaf_are_refused() {
+    var nodes = logged_nodes()
+    nodes.duplicate_last()
+    match verify_receipt(receipts_root: root(), rl::TX_INDEX, nodes) {
+        Result::Err(ProofError::TrailingNodes) => {},
+        _ => core::assert(false),
+    }
+}
+
+const ANSWER: u256 = 0
+const GAS: u256 = 30000000
+const OPEN_END: u64 = 0xffffffffffffffff
+const HASH_MISMATCH_CODE: u256 = 2
+
+contract ReceiptMockRoots uses (ops: RawOps) {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+fn header() -> Header {
+    Header {
+        slot: c::SLOT,
+        proposer_index: c::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: c::PARENT_ROOT },
+        state_root: Bytes32 { val: c::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: c::BODY_ROOT },
+    }
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn abi_nodes(_ list: NodeList) -> DynArray<Bytes> {
+    var out: MemVec<Bytes> = MemVec::new()
+    var i: usize = 0
+    while i < list.count() {
+        out.push(Bytes::from_payload(source: list.node(i)))
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn receipt_prover() -> Address uses (evm: mut Evm) {
+    let roots = evm
+        .create2<ReceiptMockRoots>(
+            value: Wei::zero(),
+            args: (c::CHILD_TIMESTAMP as u256, c::BLOCK_ROOT),
+            salt: 0,
+        )
+    evm.create2<BeaconProver>(value: Wei::zero(), args: (roots, OPEN_END), salt: 0)
+}
+
+fn receipt_call(prover: Address, nodes: NodeList, tx_index: u64) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProveReceipt {
+            timestamp: c::CHILD_TIMESTAMP,
+            header: header(),
+            receipts_root: Bytes32 { val: c::PAYLOAD_RECEIPTS_ROOT_LEAF },
+            receipts_root_branch: words(c::PAYLOAD_RECEIPTS_ROOT_BRANCH),
+            tx_index,
+            receipt_nodes: abi_nodes(nodes),
+        },
+    )
+}
+
+fn log_call(prover: Address, log_index: u64) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProveLog {
+            timestamp: c::CHILD_TIMESTAMP,
+            header: header(),
+            receipts_root: Bytes32 { val: c::PAYLOAD_RECEIPTS_ROOT_LEAF },
+            receipts_root_branch: words(c::PAYLOAD_RECEIPTS_ROOT_BRANCH),
+            tx_index: rl::TX_INDEX,
+            log_index,
+            receipt_nodes: abi_nodes(logged_nodes()),
+        },
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_receipt_is_proven_through_the_contract_from_the_4788_root()
+uses (evm: mut Evm)
+{
+    let prover = receipt_prover()
+    let outcome = receipt_call(prover, nodes: logged_nodes(), tx_index: rl::TX_INDEX)
+    core::assert(outcome.success())
+    let data = outcome.returndata()
+    core::assert(data.len() == 160)
+    core::assert((data.read_word(0) == 1) == rl::SUCCEEDED)
+    core::assert(data.read_word(32) == rl::CUMULATIVE_GAS as u256)
+    core::assert(data.read_word(64) == rl::TX_TYPE as u256)
+    core::assert(data.read_word(96) == rl::LOG_COUNT as u256)
+    core::assert(data.read_word(128) == c::SLOT as u256)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_log_is_proven_through_the_contract_field_by_field() uses (evm: mut Evm) {
+    let prover = receipt_prover()
+    let outcome = log_call(prover, log_index: rl::LOG_INDEX.downcast_truncate())
+    core::assert(outcome.success())
+    let data = outcome.returndata()
+    core::assert(data.len() == 288)
+    core::assert(data.read_word(0) == rl::LOG_ADDRESS)
+    core::assert(data.read_word(32) == rl::LOG_TOPIC_COUNT as u256)
+    var i: usize = 0
+    while i < 4 {
+        core::assert(data.read_word(64 + 32 * i) == rl::LOG_TOPICS[i])
+        i += 1
+    }
+    core::assert(data.read_word(192) == rl::LOG_DATA_HASH)
+    core::assert(data.read_word(224) == rl::LOG_DATA_LEN as u256)
+    core::assert(data.read_word(256) == c::SLOT as u256)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_tampered_receipt_proof_reverts_on_chain() uses (evm: mut Evm) {
+    let prover = receipt_prover()
+    var nodes = logged_nodes()
+    nodes.flip_byte(node: rl::NODE_COUNT - 1, at: 10)
+    let outcome = receipt_call(prover, nodes, tx_index: rl::TX_INDEX)
+    core::assert(!outcome.success())
+    core::assert(is_error<InvalidProof>(outcome.returndata()))
+    core::assert(outcome.returndata().read_word(4) == HASH_MISMATCH_CODE)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn an_absent_receipt_cannot_be_proven_on_chain() uses (evm: mut Evm) {
+    let prover = receipt_prover()
+    let outcome = receipt_call(prover, nodes: absent_nodes(), tx_index: ra::TX_INDEX)
+    core::assert(!outcome.success())
+}

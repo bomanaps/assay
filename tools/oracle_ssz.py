@@ -40,6 +40,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import oracle_mpt
+import oracle_receipt
 
 GENESIS_TIME = 1606824023
 SECONDS_PER_SLOT = 12
@@ -59,7 +60,7 @@ VALIDATOR_REGISTRY_DEPTH = 40
 HEADER_STATE_ROOT = 3
 HEADER_BODY_ROOT = 4
 BODY_EXECUTION_PAYLOAD = 9
-PAYLOAD_INDEX = {"state_root": 2, "block_number": 6, "block_hash": 12}
+PAYLOAD_INDEX = {"state_root": 2, "receipts_root": 3, "block_number": 6, "block_hash": 12}
 STATE_GENESIS_VALIDATORS_ROOT = 1
 STATE_FORK = 3
 FORK_CURRENT_VERSION = 1
@@ -346,16 +347,45 @@ def check_trie_links(names, execution, fixtures_dir):
             raise CheckError(f"listed trie fixture {name} is from a different block")
 
 
+def check_receipt_links(names, execution, receipts_root, fixtures_dir):
+    if not isinstance(names, list) or not names or len(set(names)) != len(names):
+        raise CheckError("receiptFixtures must list distinct fixture names")
+    for name in names:
+        if not isinstance(name, str) or not FIXTURE_NAME.fullmatch(name):
+            raise CheckError(f"listed receipt fixture name {name!r} is not a fixture name")
+        path = fixtures_dir / f"{name}.json"
+        if not path.exists():
+            raise CheckError(f"listed receipt fixture {name} does not exist")
+        loaded = json.loads(path.read_text())
+        if loaded["name"] != name:
+            raise CheckError(f"listed receipt fixture file {name}.json holds another fixture")
+        try:
+            result = oracle_receipt.analyze(loaded)
+        except oracle_receipt.ReceiptError as e:
+            raise CheckError(f"listed receipt fixture {name}: {e}") from None
+        if result["block_hash"] != execution["hash"] or result["receipts_root"] != receipts_root:
+            raise CheckError(f"listed receipt fixture {name} is from a different block")
+
+
 def analyze_chain(fixture, fixtures_dir):
     root, header = check_beacon(fixture, CHAIN_KEYS)
-    execution = check_execution(fixture["execution"], {"header", "childHeader", "mptFixtures"}, root, header["slot"])
+    execution_keys = {"header", "childHeader", "mptFixtures"}
+    has_receipts = isinstance(fixture.get("execution"), dict) and "receiptFixtures" in fixture["execution"]
+    if has_receipts:
+        execution_keys.add("receiptFixtures")
+    execution = check_execution(fixture["execution"], execution_keys, root, header["slot"])
     expected = {
         "execution_payload.state_root": (payload_gindex("state_root"), execution["state_root"]),
         "execution_payload.block_number": (payload_gindex("block_number"), uint64_leaf(execution["number"])),
         "execution_payload.block_hash": (payload_gindex("block_hash"), execution["hash"]),
     }
+    if has_receipts:
+        receipts_root = word(fixture["execution"]["header"]["receiptsRoot"])
+        expected["execution_payload.receipts_root"] = (payload_gindex("receipts_root"), receipts_root)
     proofs = parse_proofs(fixture["proofs"], expected, root)
     check_trie_links(fixture["execution"]["mptFixtures"], execution, fixtures_dir)
+    if has_receipts:
+        check_receipt_links(fixture["execution"]["receiptFixtures"], execution, receipts_root, fixtures_dir)
     return {"kind": "beacon_chain", "root": root, "header": header, "execution": execution, "proofs": proofs}
 
 
