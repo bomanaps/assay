@@ -485,17 +485,122 @@ def validator_fixture():
 MANIFEST = 'contract = "AssayBench"\n\n[[calls]]\nfunction = "verify()"\n\n[[calls]]\nfunction = "baseline()"\n'
 
 
+def payload_multi_fixture():
+    raw = json.loads((FIXTURES / "chain_beacon.json").read_text())
+    chain = oracle_ssz.analyze(raw, FIXTURES)
+    root = chain["root"]
+    names = [
+        "execution_payload.state_root",
+        "execution_payload.receipts_root",
+        "execution_payload.block_number",
+        "execution_payload.block_hash",
+    ]
+    proofs = {n: chain["proofs"][n] for n in names}
+    helpers = [bytes.fromhex(h[2:]) for h in raw["payloadMultiproof"]["helpers"]]
+    leaves = {n: proofs[n]["leaf"] for n in names}
+    fe_leaf = (
+        f"const LEAF_STATE: u256 = 0x{leaves[names[0]].hex()}\n"
+        f"const LEAF_RECEIPTS: u256 = 0x{leaves[names[1]].hex()}\n"
+        f"const LEAF_NUMBER: u256 = 0x{leaves[names[2]].hex()}\n"
+        f"const LEAF_HASH: u256 = 0x{leaves[names[3]].hex()}\n"
+        + fe_word_array("BENCH_HELPERS", helpers)
+    )
+    fe_verify = """
+        Verify -> u256 {
+            let helpers: Branch<14> = Branch::new(BENCH_HELPERS)
+            match verify_payload_multiproof(
+                beacon_root: BeaconRoot::new(BENCH_ROOT),
+                state_root: LEAF_STATE,
+                receipts_root: LEAF_RECEIPTS,
+                block_number_leaf: LEAF_NUMBER,
+                block_hash: LEAF_HASH,
+                helpers,
+            ) {
+                Result::Ok(()) => 1,
+                Result::Err(_) => core::panic_code(1),
+            }
+        }
+"""
+    fe_baseline = """
+        Baseline -> u256 {
+            let helpers: Branch<14> = Branch::new(BENCH_HELPERS)
+            LEAF_STATE ^ LEAF_HASH ^ helpers.nodes().len() as u256
+        }
+"""
+    fe_text = concatenate(SSZ_ORDER) + "\n" + (
+        f"const BENCH_ROOT: u256 = 0x{root.hex()}\n" + fe_leaf
+    ) + f"""{FE_MSG}
+pub contract AssayBench {{
+    recv BenchMsg {{{fe_verify}{fe_baseline}
+    }}
+}}
+"""
+    vendor = (VENDOR / "SSZ.sol").read_text()
+    branch_fns = []
+    verify_calls = []
+    for position, name in enumerate(names):
+        proof = proofs[name]
+        branch_fns.append(
+            f"""    function branch{position}() internal pure returns (bytes32[] memory words) {{
+        words = abi.decode(hex"{abi_encoded_words(proof['branch'])}", (bytes32[]));
+    }}
+"""
+        )
+        verify_calls.append(
+            f"        require(this.callVerify(branch{position}(), root, bytes32(0x{proof['leaf'].hex()}), {proof['gindex']}), \"proof\");"
+        )
+    baseline_calls = []
+    for position, name in enumerate(names):
+        proof = proofs[name]
+        baseline_calls.append(
+            f"        require(this.callBaseline(branch{position}(), root, bytes32(0x{proof['leaf'].hex()}), {proof['gindex']}), \"baseline\");"
+        )
+    body = f"""    function callVerify(bytes32[] calldata proof, bytes32 root, bytes32 leaf, uint256 gI)
+        external
+        view
+        returns (bool)
+    {{
+        return SSZ.verifyProof(proof, root, leaf, gI);
+    }}
+
+    function callBaseline(bytes32[] calldata proof, bytes32 root, bytes32 leaf, uint256 gI)
+        external
+        pure
+        returns (bool)
+    {{
+        return (proof.length ^ uint256(root) ^ uint256(leaf) ^ gI) > 0;
+    }}
+
+{"".join(branch_fns)}
+    function verify() external view returns (uint256) {{
+        bytes32 root = bytes32(0x{root.hex()});
+{chr(10).join(verify_calls)}
+        return 1;
+    }}
+
+    function baseline() external view returns (uint256) {{
+        bytes32 root = bytes32(0x{root.hex()});
+{chr(10).join(baseline_calls)}
+        return 2;
+    }}
+"""
+    sol_text = vendor + sol_wrapper(body)
+    return fe_text, sol_text
+
+
 def expected_files():
     check_vendor()
     usdc = oracle_mpt.analyze(json.loads((FIXTURES / "chain_storage_usdc.json").read_text()))
     weth = oracle_mpt.analyze(json.loads((FIXTURES / "chain_storage_weth.json").read_text()))
     payload_fe, payload_sol = payload_fixture()
+    multi_fe, multi_sol = payload_multi_fixture()
     validator_fe, validator_sol = validator_fixture()
     files = {}
     for name, fe_text, sol_text in (
         ("mpt_account", render_trie_fe("account", usdc), render_trie_sol("account", usdc)),
         ("mpt_storage", render_trie_fe("storage", weth), render_trie_sol("storage", weth)),
         ("ssz_payload", payload_fe, payload_sol),
+        ("ssz_payload_multi", multi_fe, multi_sol),
         ("ssz_validator", validator_fe, validator_sol),
     ):
         files[BENCH / f"{name}.fe"] = fe_text

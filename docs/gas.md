@@ -30,7 +30,10 @@ Both the vendored SSZ verifier and Lido's Community Staking Module verifier are 
 | mpt_account (USDC account, 9 nodes, 3,847 proof bytes) | 252,861 | 33,931 | 218,930 | 856,823 | 25,818 | 831,005 | -74% |
 | mpt_storage (WETH slot 0, 7 nodes) | 198,123 | 30,854 | 167,269 | 639,081 | 24,930 | 614,151 | -73% |
 | ssz_payload (12-level branch) | 29,202 | 23,122 | 6,080 | 29,041 | 24,678 | 4,363 | +39% |
+| ssz_payload_multi (all four payload fields, one 14-helper multiproof) | 29,481 | 23,425 | 6,056 | 52,616 | 35,984 | 16,632 | -64% |
 | ssz_validator (validator record root + 50-level branch) | 60,217 | 32,647 | 27,570 | 52,858 | 36,089 | 16,769 | +64% |
+
+The ssz_payload_multi row's Solidity column is four separate single-branch verifies through the vendored SSZ library, because no multiproof exists there; its baseline repeats the same four external calls and branch decodes without hashing, so the net column isolates verification work on both sides. The Fe multiproof proves the same four fields in 17 hashes, so its net cost (6,056 gas) is roughly that of a single branch, 2.7x below the Solidity net.
 
 Reading guide:
 
