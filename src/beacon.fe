@@ -227,6 +227,47 @@ pub fn verify_execution_receipts_root<P: ProofNodes>(
     Result::Ok(ReceiptsRoot::new(receipts_root))
 }
 
+pub const PAYLOAD_MULTIPROOF_HELPERS: usize = 14
+
+static_assert(PAYLOAD_STATE_ROOT ^ 1 == PAYLOAD_RECEIPTS_ROOT)
+static_assert(PAYLOAD_STATE_ROOT / 2 == 3217)
+static_assert(PAYLOAD_BLOCK_NUMBER / 2 == 3219)
+static_assert(PAYLOAD_BLOCK_HASH / 2 == 3222)
+
+pub fn verify_payload_multiproof<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    state_root: u256,
+    receipts_root: u256,
+    block_number_leaf: u256,
+    block_hash: u256,
+    helpers: P,
+) -> Result<ProofError, ()> {
+    let h = helpers.nodes()
+    if h.len() != PAYLOAD_MULTIPROOF_HELPERS {
+        return Result::Err(ProofError::WrongLength)
+    }
+    let n3222 = hash_pair(block_hash, h[0])
+    let n3219 = hash_pair(block_number_leaf, h[1])
+    let n3217 = hash_pair(state_root, receipts_root)
+    let n1611 = hash_pair(n3222, h[2])
+    let n1609 = hash_pair(h[3], n3219)
+    let n1608 = hash_pair(h[4], n3217)
+    let n805 = hash_pair(h[5], n1611)
+    let n804 = hash_pair(n1608, n1609)
+    let n402 = hash_pair(n804, n805)
+    let n201 = hash_pair(n402, h[6])
+    let n100 = hash_pair(h[7], n201)
+    let n50 = hash_pair(n100, h[8])
+    let n25 = hash_pair(n50, h[9])
+    let n12 = hash_pair(h[10], n25)
+    let n6 = hash_pair(n12, h[11])
+    let n3 = hash_pair(n6, h[12])
+    if hash_pair(h[13], n3) != beacon_root.value() {
+        return Result::Err(ProofError::RootMismatch)
+    }
+    Result::Ok(())
+}
+
 pub fn verify_payload_field<P: ProofNodes>(
     beacon_root: BeaconRoot,
     which: PayloadField,

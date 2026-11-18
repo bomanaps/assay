@@ -231,9 +231,20 @@ def chain():
     oracle_positions = {name: oracle_ssz.payload_gindex(f) for name, f in fields.items()}
     check_positions(t.BeaconBlock, {name: ["body", "execution_payload", f] for name, f in fields.items()}, oracle_positions)
     proofs = []
+    sibling_nodes = {}
     for name, gindex in oracle_positions.items():
         leaf, siblings = branch(block.get_backing(), gindex)
+        position = gindex
+        for sibling in siblings:
+            sibling_nodes[position ^ 1] = sibling
+            position //= 2
         proofs.append(proof_json(name, gindex, leaf, siblings))
+    multi_indices = sorted(oracle_positions.values())
+    helper_indices = oracle_ssz.multiproof_helper_indices(multi_indices)
+    multiproof = {
+        "gindices": [str(i) for i in multi_indices],
+        "helpers": ["0x" + sibling_nodes[i].hex() for i in helper_indices],
+    }
     beacon_header = t.BeaconBlockHeader(
         slot=block.slot,
         proposer_index=block.proposer_index,
@@ -278,6 +289,7 @@ def chain():
             "mptFixtures": [f["name"] for f in storage],
             "receiptFixtures": [f["name"] for f in receipt_fixtures],
         },
+        "payloadMultiproof": multiproof,
         "proofs": proofs,
     }
     rows = [capture_getproof.fixture_row(f, "capture_beacon.py chain") for f in storage]

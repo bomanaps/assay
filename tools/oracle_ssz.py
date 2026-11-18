@@ -83,6 +83,7 @@ CONSENSUS_VERSION = "fulu"
 HEADER_KEYS = {"slot", "proposer_index", "parent_root", "state_root", "body_root"}
 PROOF_KEYS = {"field", "gindex", "leaf", "branch"}
 CHAIN_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "proofs"}
+CHAIN_KEYS_MULTI = CHAIN_KEYS | {"payloadMultiproof"}
 VALIDATOR_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "capture", "validatorIndex", "validator", "proofs"}
 VALIDATOR_RECORD_KEYS = {"pubkey", "withdrawal_credentials", "effective_balance", "slashed", *VALIDATOR_EPOCHS}
 CAPTURE_KEYS = {"finalized", "canonical"}
@@ -275,6 +276,45 @@ def walk(leaf, gindex, branch):
     return node
 
 
+def multiproof_helper_indices(indices):
+    all_helper = set()
+    all_path = set()
+    for index in indices:
+        if index < 1:
+            raise CheckError(f"generalized index {index} is not positive")
+        k = index
+        while k > 1:
+            all_helper.add(k ^ 1)
+            all_path.add(k)
+            k //= 2
+    return sorted(all_helper - all_path, reverse=True)
+
+
+def calculate_multi_merkle_root(leaves, helpers, indices):
+    if len(leaves) != len(indices):
+        raise CheckError("leaf count differs from index count")
+    expected_helpers = multiproof_helper_indices(indices)
+    if len(helpers) != len(expected_helpers):
+        raise CheckError(f"helper count {len(helpers)}, expected {len(expected_helpers)}")
+    objects = {}
+    for index, leaf in zip(indices, leaves):
+        objects[index] = leaf
+    for index, helper in zip(expected_helpers, helpers):
+        objects[index] = helper
+    keys = sorted(objects, reverse=True)
+    position = 0
+    while position < len(keys):
+        k = keys[position]
+        if k > 1 and (k ^ 1) in objects and k // 2 not in objects:
+            objects[k // 2] = sha256(objects[k & ~1] + objects[k | 1])
+            keys.append(k // 2)
+            keys.sort(reverse=True)
+        position += 1
+    if 1 not in objects:
+        raise CheckError("the multiproof does not reach the root")
+    return objects[1]
+
+
 def parse_proofs(proofs, expected, root):
     if not isinstance(proofs, list):
         raise CheckError("proofs is not a list")
@@ -390,8 +430,29 @@ def check_receipt_links(names, execution, receipts_root, fixtures_dir):
             raise CheckError(f"listed receipt fixture {name} is from a different block")
 
 
+def check_payload_multiproof(fixture, proofs, root):
+    multi = fixture["payloadMultiproof"]
+    expect_keys(multi, {"gindices", "helpers"}, "payloadMultiproof")
+    indices = [decimal(i, "multiproof gindex") for i in multi["gindices"]]
+    if len(set(indices)) != len(indices):
+        raise CheckError("multiproof gindices hold duplicates")
+    by_gindex = {}
+    for p in proofs.values():
+        by_gindex.setdefault(int(p["gindex"]), p)
+    missing = [i for i in indices if i not in by_gindex]
+    if missing:
+        raise CheckError(f"multiproof gindices {missing} name no recorded proof")
+    leaves = [by_gindex[i]["leaf"] for i in indices]
+    helpers = [word(h) for h in multi["helpers"]]
+    reconstructed = calculate_multi_merkle_root(leaves, helpers, indices)
+    if reconstructed != root:
+        raise CheckError("the payload multiproof does not reconstruct the anchor root")
+    return len(helpers)
+
+
 def analyze_chain(fixture, fixtures_dir):
-    root, header = check_beacon(fixture, CHAIN_KEYS)
+    has_multi = isinstance(fixture, dict) and "payloadMultiproof" in fixture
+    root, header = check_beacon(fixture, CHAIN_KEYS_MULTI if has_multi else CHAIN_KEYS)
     execution_keys = {"header", "childHeader", "mptFixtures"}
     has_receipts = isinstance(fixture.get("execution"), dict) and "receiptFixtures" in fixture["execution"]
     if has_receipts:
@@ -409,7 +470,10 @@ def analyze_chain(fixture, fixtures_dir):
     check_trie_links(fixture["execution"]["mptFixtures"], execution, fixtures_dir)
     if has_receipts:
         check_receipt_links(fixture["execution"]["receiptFixtures"], execution, receipts_root, fixtures_dir)
-    return {"kind": "beacon_chain", "root": root, "header": header, "execution": execution, "proofs": proofs}
+    result = {"kind": "beacon_chain", "root": root, "header": header, "execution": execution, "proofs": proofs}
+    if has_multi:
+        result["multiproof_helpers"] = check_payload_multiproof(fixture, proofs, root)
+    return result
 
 
 def analyze_validator(fixture, fixtures_dir):
@@ -567,7 +631,10 @@ def check_fixture(fixture, fixtures_dir):
         f"{result['execution']['child_timestamp']}"
     )
     if result["kind"] == "beacon_chain":
-        lines.append("payload state_root, block_number, block_hash proven; trie fixtures linked")
+        line = "payload state_root, block_number, block_hash proven; trie fixtures linked"
+        if "multiproof_helpers" in result:
+            line += f"; payload multiproof ({result['multiproof_helpers']} helpers) reconstructs the root"
+        lines.append(line)
     elif result["kind"] == "beacon_deephistory":
         lines.append(
             f"latest block root at or before slot {result['target']} (period {result['period']}) proven "

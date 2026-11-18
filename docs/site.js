@@ -267,6 +267,7 @@ const FIXTURE_NOTES = {
   mpt_account: "Proves a real mainnet account record, its nonce, balance, storage root and code hash, under a captured state root through keccak-linked canonical RLP nodes. Pure EVM computation, so Fe's tight walk beats the general-purpose Solidity trie library outright.",
   mpt_storage: "Proves one storage slot value under the account's own storage root with the same canonical-only walk. Same shape of work, same shape of win.",
   ssz_payload: "Proves the execution payload's state root inside a beacon block through a 12-level SSZ branch. Nearly all of the gas is the SHA-256 precompile, which both sides pay identically, so parity is the expected result.",
+  ssz_payload_multi: "Proves all four execution payload fields at once with one deduplicated 14-helper multiproof: 17 hashes instead of 48, so the whole payload costs about what a single branch used to. The Solidity column runs four separate verifies, because no multiproof exists in the vendored library.",
   ssz_validator: "Proves a whole 8-field validator record at its registry position, about 50 hash levels deep. Both sides hash the same tree; the remaining gap is bookkeeping around the hashing, and it is shown rather than hidden."
 };
 

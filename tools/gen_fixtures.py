@@ -203,6 +203,9 @@ def render_beacon(fixture):
         raise ValueError(f"proof fields {sorted(proofs)} differ from {sorted(names)}")
     for field in sorted(names):
         parts += proof_constants(names[field], proofs[field])
+    if result["kind"] == "beacon_chain" and "payloadMultiproof" in fixture:
+        helpers = [int(h, 16) for h in fixture["payloadMultiproof"]["helpers"]]
+        parts.append(array("PAYLOAD_MULTIPROOF", "u256", [str(h) for h in helpers]))
     return "".join(parts)
 
 

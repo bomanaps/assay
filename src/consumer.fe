@@ -2,6 +2,7 @@ use core::message::MsgVariant
 use core::MemBuffer
 use std::abi::{Bytes, Bytes32, DynArray, Sol, SolCompat, sol}
 use std::evm::{Address, Call, Ctx, revert_error}
+use std::evm::ssz::u64_chunk
 use ingot::{
     bytes48_leaf,
     verify_account,
@@ -10,6 +11,7 @@ use ingot::{
     verify_execution_state_root,
     verify_historical_root,
     verify_log,
+    verify_payload_multiproof,
     verify_receipt,
     verify_storage,
     verify_validator,
@@ -104,6 +106,18 @@ pub msg ProverMsg {
         branch: DynArray<Bytes32>,
     } -> (u64, u64),
     #[selector = sol(
+        "provePayload(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32,uint64,bytes32,bytes32[])",
+    )]
+    ProvePayload {
+        timestamp: u64,
+        header: Header,
+        state_root: Bytes32,
+        receipts_root: Bytes32,
+        block_number: u64,
+        block_hash: Bytes32,
+        helpers: DynArray<Bytes32>,
+    } -> (u64, u64),
+    #[selector = sol(
         "proveDeepHistoricalRoot(uint64,(uint64,uint64,bytes32,bytes32,bytes32),uint64,bytes32,bytes32,bytes32[],bytes32[])",
     )]
     ProveDeepHistoricalRoot {
@@ -168,6 +182,21 @@ static_assert(<ProverMsg::ProveHistoricalRoot as MsgVariant<Sol>>::SELECTOR
         (
             "proveHistoricalRoot",
             <(u64, Header, u64, Bytes32, DynArray<Bytes32>) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+static_assert(<ProverMsg::ProvePayload as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "provePayload",
+            <(
+                u64,
+                Header,
+                Bytes32,
+                Bytes32,
+                u64,
+                Bytes32,
+                DynArray<Bytes32>,
+            ) as SolCompat>::SOL_TYPE,
         ),
     ))
 static_assert(<ProverMsg::ProveDeepHistoricalRoot as MsgVariant<Sol>>::SELECTOR
@@ -366,6 +395,31 @@ pub contract BeaconProver uses (call: Call, ctx: Ctx) {
                 ),
             )
             (slot, header.slot)
+        }
+
+        ProvePayload {
+            timestamp,
+            header,
+            state_root,
+            receipts_root,
+            block_number,
+            block_hash,
+            helpers,
+        } -> (u64, u64)
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            checked(
+                verify_payload_multiproof(
+                    beacon_root: root,
+                    state_root: state_root.val,
+                    receipts_root: receipts_root.val,
+                    block_number_leaf: u64_chunk(block_number),
+                    block_hash: block_hash.val,
+                    helpers,
+                ),
+            )
+            (block_number, header.slot)
         }
 
         ProveDeepHistoricalRoot {

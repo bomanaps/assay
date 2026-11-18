@@ -1,0 +1,283 @@
+use ingot::fixtures::chain_beacon as c
+use ingot::beacon::PAYLOAD_MULTIPROOF_HELPERS
+use ingot::{
+    verify_payload_multiproof,
+    BeaconProver,
+    BeaconRoot,
+    Branch,
+    Header,
+    InvalidProof,
+    ProofError,
+    ProverMsg,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes32, DynArray}
+use std::evm::ssz::u64_chunk
+use std::evm::{Address, CallOutcome, Evm, RawOps, is_error}
+
+fn anchor() -> BeaconRoot {
+    BeaconRoot::new(c::BLOCK_ROOT)
+}
+
+fn run(
+    state_root: u256,
+    receipts_root: u256,
+    block_number_leaf: u256,
+    block_hash: u256,
+    _ helpers: [u256; 14],
+) -> Result<ProofError, ()> {
+    verify_payload_multiproof(
+        beacon_root: anchor(),
+        state_root,
+        receipts_root,
+        block_number_leaf,
+        block_hash,
+        helpers: Branch::new(helpers),
+    )
+}
+
+fn honest() -> Result<ProofError, ()> {
+    run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        c::PAYLOAD_MULTIPROOF,
+    )
+}
+
+#[test]
+fn one_multiproof_proves_all_four_payload_fields() {
+    core::assert(c::PAYLOAD_MULTIPROOF.len() == PAYLOAD_MULTIPROOF_HELPERS)
+    match honest() {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn every_flipped_helper_breaks_the_multiproof() {
+    var position: usize = 0
+    while position < 14 {
+        var tampered = c::PAYLOAD_MULTIPROOF
+        tampered[position] = tampered[position] ^ 1
+        match run(
+            state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+            receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+            block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+            block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+            tampered,
+        ) {
+            Result::Err(ProofError::RootMismatch) => {},
+            _ => core::assert(false),
+        }
+        position += 1
+    }
+}
+
+#[test]
+fn every_flipped_leaf_breaks_the_multiproof() {
+    match run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF ^ 1,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        c::PAYLOAD_MULTIPROOF,
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+    match run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF ^ 1,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        c::PAYLOAD_MULTIPROOF,
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+    match run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF ^ 1,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        c::PAYLOAD_MULTIPROOF,
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+    match run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF ^ 1,
+        c::PAYLOAD_MULTIPROOF,
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn swapped_helpers_are_refused() {
+    var tampered = c::PAYLOAD_MULTIPROOF
+    let held = tampered[0]
+    tampered[0] = tampered[1]
+    tampered[1] = held
+    match run(
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        tampered,
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_truncated_helper_list_is_refused() {
+    var short: [u256; 13] = [0; 13]
+    var position: usize = 0
+    while position < 13 {
+        short[position] = c::PAYLOAD_MULTIPROOF[position]
+        position += 1
+    }
+    match verify_payload_multiproof(
+        beacon_root: anchor(),
+        state_root: c::PAYLOAD_STATE_ROOT_LEAF,
+        receipts_root: c::PAYLOAD_RECEIPTS_ROOT_LEAF,
+        block_number_leaf: c::PAYLOAD_BLOCK_NUMBER_LEAF,
+        block_hash: c::PAYLOAD_BLOCK_HASH_LEAF,
+        helpers: Branch::new(short),
+    ) {
+        Result::Err(ProofError::WrongLength) => {},
+        _ => core::assert(false),
+    }
+}
+
+const GAS: u256 = 30000000
+const OPEN_END: u64 = 0xffffffffffffffff
+const ROOT_MISMATCH_CODE: u256 = 8
+
+contract MultiMockRoots uses (ops: RawOps) {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+fn header() -> Header {
+    Header {
+        slot: c::SLOT,
+        proposer_index: c::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: c::PARENT_ROOT },
+        state_root: Bytes32 { val: c::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: c::BODY_ROOT },
+    }
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn multi_prover() -> Address uses (evm: mut Evm) {
+    let roots = evm
+        .create2<MultiMockRoots>(
+            value: Wei::zero(),
+            args: (c::CHILD_TIMESTAMP as u256, c::BLOCK_ROOT),
+            salt: 0,
+        )
+    evm.create2<BeaconProver>(value: Wei::zero(), args: (roots, OPEN_END), salt: 0)
+}
+
+fn payload_call(prover: Address, block_number: u64, _ helpers: [u256; 14]) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProvePayload {
+            timestamp: c::CHILD_TIMESTAMP,
+            header: header(),
+            state_root: Bytes32 { val: c::PAYLOAD_STATE_ROOT_LEAF },
+            receipts_root: Bytes32 { val: c::PAYLOAD_RECEIPTS_ROOT_LEAF },
+            block_number,
+            block_hash: Bytes32 { val: c::PAYLOAD_BLOCK_HASH_LEAF },
+            helpers: words(helpers),
+        },
+    )
+}
+
+fn fixture_block_number() -> u64 {
+    var number: u64 = 0
+    var shift: u64 = 0
+    var high: u256 = 248
+    var i: usize = 0
+    while i < 8 {
+        let byte: u8 = ((c::PAYLOAD_BLOCK_NUMBER_LEAF >> high) & 0xff).downcast_truncate()
+        number |= (byte as u64) << shift
+        shift += 8
+        high -= 8
+        i += 1
+    }
+    number
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn one_call_proves_the_whole_payload_through_the_contract()
+uses (evm: mut Evm)
+{
+    core::assert(
+        u64_chunk(fixture_block_number()) == c::PAYLOAD_BLOCK_NUMBER_LEAF,
+    )
+    let prover = multi_prover()
+    let outcome = payload_call(
+        prover,
+        block_number: fixture_block_number(),
+        c::PAYLOAD_MULTIPROOF,
+    )
+    core::assert(outcome.success())
+    let data = outcome.returndata()
+    core::assert(data.len() == 64)
+    core::assert(data.read_word(0) == fixture_block_number() as u256)
+    core::assert(data.read_word(32) == c::SLOT as u256)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_tampered_multiproof_reverts_on_chain() uses (evm: mut Evm) {
+    let prover = multi_prover()
+    var tampered = c::PAYLOAD_MULTIPROOF
+    tampered[7] = tampered[7] ^ 1
+    let outcome = payload_call(prover, block_number: fixture_block_number(), tampered)
+    core::assert(!outcome.success())
+    core::assert(is_error<InvalidProof>(outcome.returndata()))
+    core::assert(outcome.returndata().read_word(4) == ROOT_MISMATCH_CODE)
+}

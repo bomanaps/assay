@@ -9,6 +9,7 @@ use verifier::{
     verify_execution_state_root,
     verify_log,
     verify_payload_field,
+    verify_payload_multiproof,
     verify_receipt,
     verify_storage,
     AccountState,
@@ -24,6 +25,7 @@ use verifier::{
 }
 use ingot::beacon_input::{read_anchor, read_proof, Anchor, AnchorOutcome}
 use ingot::input::{
+    word_list,
     parse_hex_blob,
     parse_hex_fixed,
     quantity_field,
@@ -389,6 +391,10 @@ uses (fs: Fs, out: mut Stdout)
         },
     }
     let state_root = StateRoot::new(state_root_leaf)
+    if document.get("payloadMultiproof").is_some() {
+        let code = verify_multiproof_section(document, anchor, claims)
+        if code != 0 { return code }
+    }
     var receipts_verified: usize = 0
     if execution.get("receiptFixtures").is_some() {
         let receipts_root_name = ingot::input::string_buffer(RECEIPTS_ROOT_FIELD)
@@ -694,6 +700,92 @@ uses (out: mut Stdout)
             }
             println!("ok   ", name, ": receipt ", tx_index, " proven absent")
             Option::Some(true)
+        },
+    }
+}
+
+fn verify_multiproof_section(_ document: Value, _ anchor: Anchor, _ claims: ExecutionClaims) -> i32
+uses (out: mut Stdout)
+{
+    let multi = ref document["payloadMultiproof"]
+    if multi.get("gindices").is_none() {
+        println!("FAIL payloadMultiproof names no gindices")
+        return 2
+    }
+    let gindices_match = match multi["gindices"] {
+        Value::Array(ref entries) => {
+            let expected: [u256; 4] = [
+                PayloadField::StateRoot.gindex().value(),
+                PayloadField::ReceiptsRoot.gindex().value(),
+                PayloadField::BlockNumber.gindex().value(),
+                PayloadField::BlockHash.gindex().value(),
+            ]
+            if entries.len() != 4 {
+                false
+            } else {
+                var all_match = true
+                var i: usize = 0
+                while i < 4 {
+                    let claimed = match entries[i].as_string() {
+                        Option::Some(ref text) => ingot::input::parse_decimal(text),
+                        Option::None => Option::None,
+                    }
+                    if claimed != Option::Some(expected[i]) {
+                        all_match = false
+                    }
+                    i += 1
+                }
+                all_match
+            }
+        },
+        _ => false,
+    }
+    if !gindices_match {
+        println!(
+            "FAIL payloadMultiproof gindices do not name the four payload fields in order",
+        )
+        return 1
+    }
+    if multi.get("helpers").is_none() {
+        println!("FAIL payloadMultiproof holds no helpers")
+        return 2
+    }
+    let helpers = match word_list(ref multi["helpers"]) {
+        Option::Some(helpers) => helpers,
+        Option::None => {
+            println!("FAIL payloadMultiproof helpers are malformed")
+            return 2
+        },
+    }
+    if helpers.len() != 14 {
+        println!(
+            "FAIL payloadMultiproof holds ",
+            helpers.len(),
+            " helpers; the four payload fields need exactly 14",
+        )
+        return 2
+    }
+    match verify_payload_multiproof(
+        beacon_root: anchor.root,
+        state_root: claims.state_root,
+        receipts_root: claims.receipts_root,
+        block_number_leaf: claims.number_leaf,
+        block_hash: claims.hash,
+        helpers: helpers.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   payload multiproof: all four payload fields proven at once with ",
+                helpers.len(),
+                " helpers, agreeing with the single branches",
+            )
+            0
+        },
+        Result::Err(_) => {
+            println!(
+                "FAIL the payload multiproof does not reconstruct the anchor root",
+            )
+            1
         },
     }
 }
