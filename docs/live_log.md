@@ -9,3 +9,4 @@ so failures are visible on the Actions page, never in this table.
 | when (UTC) | beacon slot | execution block | beacon block root | accounts | slots |
 |---|---|---|---|---|---|
 | 2026-11-17T08:56:13+00:00 | 15673476 | 26433706 | 0x90d10c78097f7a1554bfce7374776ebbb2bfc8aebeb2cc892f12215f62736090 | 3 | 5 |
+| 2026-11-18T13:51:49+00:00 | 15682154 | 26442358 | 0x9293f4aac4d24e72dbff7910ea0e6946a3b99cd59ece1fe994c77f98e1b87a8a | 3 | 5 |
