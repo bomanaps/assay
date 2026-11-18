@@ -7,6 +7,7 @@ use ingot::{
     verify_account,
     verify_execution_receipts_root,
     verify_execution_state_root,
+    verify_historical_root,
     verify_log,
     verify_receipt,
     verify_storage,
@@ -92,6 +93,16 @@ pub msg ProverMsg {
         branch: DynArray<Bytes32>,
     } -> u64,
     #[selector = sol(
+        "proveHistoricalRoot(uint64,(uint64,uint64,bytes32,bytes32,bytes32),uint64,bytes32,bytes32[])",
+    )]
+    ProveHistoricalRoot {
+        timestamp: u64,
+        header: Header,
+        slot: u64,
+        historical_root: Bytes32,
+        branch: DynArray<Bytes32>,
+    } -> (u64, u64),
+    #[selector = sol(
         "proveReceipt(uint64,(uint64,uint64,bytes32,bytes32,bytes32),bytes32,bytes32[],uint64,bytes[])",
     )]
     ProveReceipt {
@@ -137,6 +148,13 @@ static_assert(<ProverMsg::ProveValidator as MsgVariant<Sol>>::SELECTOR
         (
             "proveValidator",
             <(u64, Header, u64, ValidatorRecord, DynArray<Bytes32>) as SolCompat>::SOL_TYPE,
+        ),
+    ))
+static_assert(<ProverMsg::ProveHistoricalRoot as MsgVariant<Sol>>::SELECTOR
+    == sol(
+        (
+            "proveHistoricalRoot",
+            <(u64, Header, u64, Bytes32, DynArray<Bytes32>) as SolCompat>::SOL_TYPE,
         ),
     ))
 static_assert(<ProverMsg::ProveReceipt as MsgVariant<Sol>>::SELECTOR
@@ -304,6 +322,22 @@ pub contract BeaconProver uses (call: Call, ctx: Ctx) {
                 ),
             )
             (value, header.slot)
+        }
+
+        ProveHistoricalRoot { timestamp, header, slot, historical_root, branch } -> (u64, u64)
+        uses (call, ctx, beacon_roots, last_slot)
+        {
+            let root = proven_root(beacon_roots, last_slot, timestamp, header)
+            checked(
+                verify_historical_root(
+                    beacon_root: root,
+                    header_slot: header.slot,
+                    slot,
+                    historical_root: historical_root.val,
+                    branch,
+                ),
+            )
+            (slot, header.slot)
         }
 
         ProveReceipt {

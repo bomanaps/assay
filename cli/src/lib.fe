@@ -6,18 +6,25 @@ const VALIDATOR_KIND: String<16> = "beacon_validator"
 const TRIE_KIND_ACCOUNT: String<7> = "account"
 const TRIE_KIND_STORAGE: String<7> = "storage"
 const VECTOR_KIND: String<11> = "trie_vector"
+const HISTORY_KIND: String<14> = "beacon_history"
 
 fn usage() -> i32 uses (out: mut Stdout) {
     println!("usage: assay verify <fixture.json>")
     println!()
     println!(
-        "Verifies every proof in a beacon_chain or beacon_validator fixture",
+        "Verifies every proof in a beacon_chain, beacon_validator or",
     )
     println!(
-        "offline, against the beacon block root the file names as its anchor.",
+        "beacon_history fixture offline, against the beacon block root the",
     )
     println!(
-        "A beacon_chain file's linked trie fixtures are read from its folder.",
+        "file names as its anchor; a beacon_chain file's linked trie and",
+    )
+    println!(
+        "receipt fixtures are read from its folder. A trie_vector file is",
+    )
+    println!(
+        "an adversarial vector that must fail for exactly its named reason.",
     )
     println!()
     println!(
@@ -58,6 +65,9 @@ pub fn main() -> i32 uses (args: Args, fs: Fs, out: mut Stdout) {
     }
     if ingot::input::kind_equals(document, VALIDATOR_KIND) {
         return ingot::validator::verify_validator_file(document)
+    }
+    if ingot::input::kind_equals(document, HISTORY_KIND) {
+        return ingot::history::verify_history_file(document)
     }
     if ingot::input::kind_equals(document, VECTOR_KIND) {
         return ingot::vector::verify_vector_file(document)

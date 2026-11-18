@@ -2,6 +2,7 @@ pub use account::{decode_account, verify_account}
 pub use beacon::{
     verify_execution_receipts_root,
     verify_execution_state_root,
+    verify_historical_root,
     verify_payload_field,
     verify_state_field,
     verify_validator,

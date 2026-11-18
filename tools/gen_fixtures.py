@@ -167,6 +167,13 @@ def render_beacon(fixture):
         names = dict(CHAIN_PROOFS)
         if "execution_payload.receipts_root" in proofs:
             names["execution_payload.receipts_root"] = "PAYLOAD_RECEIPTS_ROOT"
+    elif result["kind"] == "beacon_history":
+        parts += [
+            const("TARGET_SLOT", "u64", result["target"]),
+            const("HISTORICAL_ROOT", "u256", word(result["historical_root"])),
+        ]
+        names = {f"block_roots[{result['position']}]": "BLOCK_ROOTS_ELEMENT"}
+        names.update(STATE_PROOFS)
     else:
         record = result["record"]
         parts += [

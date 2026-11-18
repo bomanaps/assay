@@ -52,6 +52,7 @@ WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
 ABSENT = "0x00000000000000000000000000000000a55a70ff"
 DECIMAL_PATTERN = re.compile(r"[0-9]+")
 VALIDATOR_NAME_PATTERN = re.compile(r"validator_[a-z0-9_]+")
+HISTORY_NAME_PATTERN = re.compile(r"history_[a-z0-9_]+")
 
 
 def fail(message):
@@ -65,12 +66,14 @@ def env(name):
     return value.rstrip("/")
 
 
-def beacon_get(path):
+def beacon_get(path, allow_missing=False):
     request = urllib.request.Request(env("BEACON_URL") + path, headers={"user-agent": "assay-capture/0.1"})
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             reply = json.load(response)
     except urllib.error.HTTPError as e:
+        if allow_missing and e.code == 404:
+            return None
         fail(f"beacon {path}: HTTP {e.code} {e.reason}")
     except urllib.error.URLError as e:
         fail(f"beacon {path}: {e.reason}")
@@ -377,11 +380,107 @@ def validator(state_path, index_text, fixture_name):
     stage_and_commit([fixture], [row])
 
 
+def history(state_path, slot_text, fixture_name):
+    if not DECIMAL_PATTERN.fullmatch(slot_text):
+        fail(f"target slot must be a decimal number: {slot_text}")
+    if not HISTORY_NAME_PATTERN.fullmatch(fixture_name):
+        fail(f"fixture name must look like history_<word>: {fixture_name}")
+    target = int(slot_text)
+    chain_id = check_network()
+    url = env("RPC_URL")
+    state = t.BeaconState.decode_bytes(pathlib.Path(state_path).read_bytes())
+    if bytes(state.genesis_validators_root) != oracle_ssz.MAINNET_GENESIS_VALIDATORS_ROOT:
+        fail("state is not a mainnet state")
+    if bytes(state.fork.current_version) != oracle_ssz.FULU_FORK_VERSION:
+        fail(f"state fork version {hex32(state.fork.current_version)} is not Fulu")
+    state_root = hex32(state.hash_tree_root())
+    slot = int(state.slot)
+    if not (target < slot and slot <= target + oracle_ssz.SLOTS_PER_HISTORICAL_ROOT):
+        fail(f"slot {target} is outside the historical window of the state at slot {slot}")
+    position = target % oracle_ssz.SLOTS_PER_HISTORICAL_ROOT
+    stored = hex32(state.block_roots[position])
+    probe = target
+    while True:
+        response = beacon_get(f"/eth/v1/beacon/headers/{probe}", allow_missing=True)
+        if response is not None:
+            break
+        probe -= 1
+        if target - probe > 64:
+            fail(f"no canonical block found within 64 slots at or before {target}")
+    probed_root = response["data"]["root"]
+    if probed_root != stored:
+        fail(
+            f"state.block_roots[{position}] is {stored} but the API's latest block at or before "
+            f"slot {target} (slot {probe}) has root {probed_root}"
+        )
+    response = beacon_get(f"/eth/v1/beacon/headers/{slot}")
+    if response.get("finalized") is not True or response["data"].get("canonical") is not True:
+        fail(f"the block at slot {slot} is not reported finalized and canonical")
+    message = response["data"]["header"]["message"]
+    if message["state_root"] != state_root:
+        fail(f"computed state root {state_root} differs from the header's {message['state_root']}")
+    beacon_root = response["data"]["root"]
+    beacon_header = t.BeaconBlockHeader.from_obj(message)
+    if hex32(beacon_header.hash_tree_root()) != beacon_root:
+        fail("computed header root differs from the reported block root")
+    payload = state.latest_execution_payload_header
+    number = int(payload.block_number)
+    header = capture_getproof.block_header(url, hex(number))
+    child = capture_getproof.block_header(url, hex(number + 1))
+    if header["hash"] != hex32(payload.block_hash) or child["parentHash"] != header["hash"]:
+        fail("execution blocks do not match the state's latest payload")
+    if child["parentBeaconBlockRoot"] != beacon_root:
+        fail("the child execution block does not name this beacon block")
+    header_position = oracle_ssz.field_gindex(oracle_ssz.HEADER_FIELDS, oracle_ssz.HEADER_STATE_ROOT)
+    if type_gindex(t.BeaconBlockHeader, ["state_root"]) != header_position:
+        fail("position of header.state_root disagrees between remerkleable and the oracle")
+    header_leaf, header_siblings = branch(beacon_header.get_backing(), header_position)
+    if hex32(header_leaf) != state_root:
+        fail("header branch does not end at the state root")
+    in_state = {
+        f"block_roots[{position}]": oracle_ssz.block_root_element_gindex(position),
+        "genesis_validators_root": oracle_ssz.state_gindex("genesis_validators_root"),
+        "fork.current_version": oracle_ssz.state_gindex("fork.current_version"),
+        "latest_execution_payload_header.block_hash": oracle_ssz.state_gindex(
+            "latest_execution_payload_header.block_hash"
+        ),
+    }
+    type_keys = {
+        f"block_roots[{position}]": ["block_roots", position],
+        "genesis_validators_root": ["genesis_validators_root"],
+        "fork.current_version": ["fork", "current_version"],
+        "latest_execution_payload_header.block_hash": ["latest_execution_payload_header", "block_hash"],
+    }
+    check_positions(t.BeaconState, type_keys, in_state)
+    proofs = []
+    for name, gindex in in_state.items():
+        leaf, siblings = branch(state.get_backing(), gindex)
+        proofs.append(proof_json(name, oracle_ssz.from_block_root(gindex), leaf, siblings + header_siblings))
+    fixture = {
+        "name": fixture_name,
+        "kind": "beacon_history",
+        "consensusVersion": oracle_ssz.CONSENSUS_VERSION,
+        "beacon": {"blockRoot": beacon_root, "header": header_json(beacon_header)},
+        "execution": {"header": header, "childHeader": child},
+        "capture": {"finalized": True, "canonical": True},
+        "targetSlot": str(target),
+        "historicalRoot": stored,
+        "proofs": proofs,
+    }
+    row = capture_getproof.readme_row(
+        fixture_name, "beacon_history", chain_id, f"slot {slot}", beacon_root, state_root,
+        f"capture_beacon.py history <finalized state at slot {slot}> {target} {fixture_name}",
+    )
+    stage_and_commit([fixture], [row])
+
+
 def main(argv):
     if len(argv) == 2 and argv[1] == "chain":
         chain()
     elif len(argv) == 5 and argv[1] == "validator":
         validator(argv[2], argv[3], argv[4])
+    elif len(argv) == 5 and argv[1] == "history":
+        history(argv[2], argv[3], argv[4])
     else:
         fail(__doc__)
 

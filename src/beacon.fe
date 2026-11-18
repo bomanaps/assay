@@ -26,6 +26,8 @@ pub const STATE_FORK_CURRENT_VERSION: u256 = concat(
     concat(field(STATE_FIELDS, 3), field(FORK_FIELDS, 1)),
 )
 pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_FIELDS, 11), 2))
+pub const SLOTS_PER_HISTORICAL_ROOT: u256 = 8192
+pub const STATE_BLOCK_ROOTS: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 5))
 
 static_assert(HEADER_STATE_ROOT == 11)
 static_assert(HEADER_BODY_ROOT == 12)
@@ -34,6 +36,7 @@ static_assert(PAYLOAD_RECEIPTS_ROOT == 6435)
 static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
 static_assert(PAYLOAD_BLOCK_HASH == 6444)
 static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
+static_assert(STATE_BLOCK_ROOTS == 709)
 static_assert(STATE_FORK_CURRENT_VERSION == 2829)
 
 pub enum PayloadField {
@@ -88,6 +91,18 @@ impl ValidatorField {
     }
 }
 
+pub const fn block_root_element_gindex(_ index: u64) -> GIndex {
+    if index as u256 >= SLOTS_PER_HISTORICAL_ROOT {
+        core::panic_code(PANIC_ASSERT)
+    }
+    GIndex::new(
+        concat(
+            STATE_BLOCK_ROOTS,
+            SLOTS_PER_HISTORICAL_ROOT + index as u256,
+        ),
+    )
+}
+
 pub const fn validator_element_gindex(_ index: u64) -> GIndex {
     if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
         core::panic_code(PANIC_ASSERT)
@@ -106,6 +121,9 @@ pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> GIndex {
     )
 }
 
+static_assert(block_root_element_gindex(0).value() == 5808128)
+static_assert(block_root_element_gindex(1).value() == 5808129)
+static_assert(block_root_element_gindex(8191).value() == 5816319)
 static_assert(validator_element_gindex(0).value() == 1572301627719680)
 static_assert(validator_element_gindex(2345678).value() == 1572301630065358)
 static_assert(validator_gindex(0, ValidatorField::Pubkey).value() == 12578413021757440)
@@ -221,6 +239,27 @@ pub fn verify_state_field<P: ProofNodes>(
         root: beacon_root.as_root(),
         leaf,
         gindex: which.gindex(),
+        branch,
+    )
+}
+
+pub fn verify_historical_root<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    header_slot: u64,
+    slot: u64,
+    historical_root: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    if slot >= header_slot {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    if (header_slot - slot) as u256 > SLOTS_PER_HISTORICAL_ROOT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf: historical_root,
+        gindex: block_root_element_gindex(slot % 8192),
         branch,
     )
 }
