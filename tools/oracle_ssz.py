@@ -66,11 +66,13 @@ STATE_FORK = 3
 FORK_CURRENT_VERSION = 1
 STATE_LATEST_EXECUTION_PAYLOAD_HEADER = 24
 STATE_VALIDATORS = 11
+STATE_BLOCK_ROOTS = 5
+SLOTS_PER_HISTORICAL_ROOT = 8192
 VALIDATOR_INDEX = {"pubkey": 0, "withdrawal_credentials": 1, "effective_balance": 2}
 VALIDATOR_EPOCHS = ("activation_eligibility_epoch", "activation_epoch", "exit_epoch", "withdrawable_epoch")
 LIST_LENGTH_SIBLING = 3 + VALIDATOR_REGISTRY_DEPTH
 
-BEACON_KINDS = ("beacon_chain", "beacon_validator")
+BEACON_KINDS = ("beacon_chain", "beacon_validator", "beacon_history")
 FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 CONSENSUS_VERSION = "fulu"
 HEADER_KEYS = {"slot", "proposer_index", "parent_root", "state_root", "body_root"}
@@ -79,6 +81,7 @@ CHAIN_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "proofs
 VALIDATOR_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "capture", "validatorIndex", "validator", "proofs"}
 VALIDATOR_RECORD_KEYS = {"pubkey", "withdrawal_credentials", "effective_balance", "slashed", *VALIDATOR_EPOCHS}
 CAPTURE_KEYS = {"finalized", "canonical"}
+HISTORY_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "capture", "targetSlot", "historicalRoot", "proofs"}
 
 
 class CheckError(Exception):
@@ -137,6 +140,12 @@ def concat(outer, inner):
 def payload_gindex(field):
     body = concat(field_gindex(HEADER_FIELDS, HEADER_BODY_ROOT), field_gindex(BODY_FIELDS, BODY_EXECUTION_PAYLOAD))
     return concat(body, field_gindex(PAYLOAD_FIELDS, PAYLOAD_INDEX[field]))
+
+
+def block_root_element_gindex(index):
+    if not 0 <= index < SLOTS_PER_HISTORICAL_ROOT:
+        raise CheckError(f"block root index {index} outside the historical vector")
+    return concat(field_gindex(STATE_FIELDS, STATE_BLOCK_ROOTS), SLOTS_PER_HISTORICAL_ROOT + index)
 
 
 def validator_element_gindex(index):
@@ -437,12 +446,48 @@ def analyze_validator(fixture, fixtures_dir):
     }
 
 
+def analyze_history(fixture, fixtures_dir):
+    root, header = check_beacon(fixture, HISTORY_KEYS)
+    execution = check_execution(fixture["execution"], {"header", "childHeader"}, root, header["slot"])
+    expect_keys(fixture["capture"], CAPTURE_KEYS, "capture")
+    if fixture["capture"]["finalized"] is not True or fixture["capture"]["canonical"] is not True:
+        raise CheckError("capture did not record a finalized canonical block")
+    target = decimal(fixture["targetSlot"], "targetSlot")
+    slot = header["slot"]
+    if not (target < slot and slot <= target + SLOTS_PER_HISTORICAL_ROOT):
+        raise CheckError(f"target slot {target} is outside the historical window of slot {slot}")
+    position = target % SLOTS_PER_HISTORICAL_ROOT
+    stored = word(fixture["historicalRoot"])
+    expected = {
+        f"block_roots[{position}]": (from_block_root(block_root_element_gindex(position)), stored),
+        "genesis_validators_root": (from_block_root(state_gindex("genesis_validators_root")), MAINNET_GENESIS_VALIDATORS_ROOT),
+        "fork.current_version": (from_block_root(state_gindex("fork.current_version")), FULU_FORK_VERSION + bytes(28)),
+        "latest_execution_payload_header.block_hash": (
+            from_block_root(state_gindex("latest_execution_payload_header.block_hash")),
+            execution["hash"],
+        ),
+    }
+    proofs = parse_proofs(fixture["proofs"], expected, root)
+    return {
+        "kind": "beacon_history",
+        "root": root,
+        "header": header,
+        "execution": execution,
+        "target": target,
+        "position": position,
+        "historical_root": stored,
+        "proofs": proofs,
+    }
+
+
 def analyze(fixture, fixtures_dir):
     kind = fixture.get("kind") if isinstance(fixture, dict) else None
     if kind == "beacon_chain":
         return analyze_chain(fixture, fixtures_dir)
     if kind == "beacon_validator":
         return analyze_validator(fixture, fixtures_dir)
+    if kind == "beacon_history":
+        return analyze_history(fixture, fixtures_dir)
     raise CheckError(f"not a beacon fixture: kind {kind!r}")
 
 
@@ -455,6 +500,11 @@ def check_fixture(fixture, fixtures_dir):
     )
     if result["kind"] == "beacon_chain":
         lines.append("payload state_root, block_number, block_hash proven; trie fixtures linked")
+    elif result["kind"] == "beacon_history":
+        lines.append(
+            f"latest block root at or before slot {result['target']} proven from the anchor at slot "
+            f"{result['header']['slot']}; mainnet genesis root and Fulu fork proven"
+        )
     else:
         lines.append(
             f"validator {result['index']} of {result['registry']}: whole record, pubkey, "

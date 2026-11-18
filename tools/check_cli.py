@@ -48,6 +48,21 @@ CHAIN_TAMPERS = [
     ("receipt traversal name", 2, "not a plain fixture name", lambda f: f["execution"].update(receiptFixtures=["../chain_receipt_logged"])),
 ]
 
+HISTORY_TAMPERS = [
+    ("target past the anchor", 1, "is not before the anchor", lambda f: f.update(targetSlot=f["beacon"]["header"]["slot"])),
+    ("renamed target slot", 2, "no well-formed proof named", lambda f: f.update(targetSlot=str(int(f["targetSlot"]) + 1))),
+    ("claimed root", 1, "does not encode the file's claimed historical root", lambda f: f.update(historicalRoot=flip(f["historicalRoot"]))),
+    ("roots branch word", 1, "historical root branch does not reach", lambda f: history_proof(f)["branch"].__setitem__(5, flip(history_proof(f)["branch"][5]))),
+    ("genesis root branch", 1, "genesis_validators_root", lambda f: proof(f, "genesis_validators_root")["branch"].__setitem__(0, flip(proof(f, "genesis_validators_root")["branch"][0]))),
+    ("execution hash claim", 1, "does not match the execution header's claim", lambda f: f["execution"]["header"].update(hash=flip(f["execution"]["header"]["hash"]))),
+]
+
+
+def history_proof(fixture):
+    position = int(fixture["targetSlot"]) % 8192
+    return proof(fixture, f"block_roots[{position}]")
+
+
 VALIDATOR_TAMPERS = [
     ("effective balance", 1, "does not equal the record's hash tree root", lambda f: f["validator"].update(effective_balance=str(int(f["validator"]["effective_balance"]) + 1))),
     ("slashed flag", 1, "does not equal the record's hash tree root", lambda f: f["validator"].update(slashed=not f["validator"]["slashed"])),
@@ -100,7 +115,7 @@ def main(argv):
     failures = []
     with tempfile.TemporaryDirectory() as scratch_text:
         scratch = pathlib.Path(scratch_text)
-        for name in ("chain_beacon", "validator_beacon", "validator_slashed"):
+        for name in ("chain_beacon", "validator_beacon", "validator_slashed", "history_day_old"):
             code, output = run(binary, fixtures / f"{name}.json")
             expect(f"{name} verifies", 0, "verified:", code, output, failures)
         linked = json.loads((fixtures / "chain_beacon.json").read_text())
@@ -152,6 +167,14 @@ def main(argv):
         slot_value.write_text(json.dumps(missing_receipt))
         code, output = run(binary, slot_value)
         expect("chain missing receipt file", 2, "cannot read", code, output, failures)
+        original_history = json.loads((fixtures / "history_day_old.json").read_text())
+        history_path = scratch / "history_day_old.json"
+        for label, expected_code, needle, tamper in HISTORY_TAMPERS:
+            tampered = copy.deepcopy(original_history)
+            tamper(tampered)
+            history_path.write_text(json.dumps(tampered))
+            code, output = run(binary, history_path)
+            expect(f"history {label}", expected_code, needle, code, output, failures)
         original_validator = json.loads((fixtures / "validator_beacon.json").read_text())
         for label, expected_code, needle, tamper in VALIDATOR_TAMPERS:
             tampered = copy.deepcopy(original_validator)
