@@ -5,6 +5,7 @@ pub use chain_receipt_last::{self}
 pub use chain_receipt_logged::{self}
 pub use chain_storage_usdc::{self}
 pub use chain_storage_weth::{self}
+pub use history_capella_first::{self}
 pub use history_day_old::{self}
 pub use mainnet_account_absent::{self}
 pub use mainnet_account_eoa::{self}

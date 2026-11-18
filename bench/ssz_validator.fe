@@ -472,6 +472,11 @@ pub const STATE_FORK_CURRENT_VERSION: u256 = concat(
 pub const VALIDATORS_DATA: u256 = concat(HEADER_STATE_ROOT, concat(field(STATE_FIELDS, 11), 2))
 pub const SLOTS_PER_HISTORICAL_ROOT: u256 = 8192
 pub const STATE_BLOCK_ROOTS: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 5))
+pub const STATE_HISTORICAL_SUMMARIES: u256 = concat(HEADER_STATE_ROOT, field(STATE_FIELDS, 27))
+pub const HISTORICAL_SUMMARIES_LIMIT: u256 = 1 << 24
+pub const SUMMARY_FIELDS: u256 = 2
+pub const CAPELLA_FIRST_PERIOD: u64 = 758
+pub const CAPELLA_FIRST_SLOT: u64 = 6209536
 
 static_assert(HEADER_STATE_ROOT == 11)
 static_assert(HEADER_BODY_ROOT == 12)
@@ -481,6 +486,9 @@ static_assert(PAYLOAD_BLOCK_NUMBER == 6438)
 static_assert(PAYLOAD_BLOCK_HASH == 6444)
 static_assert(STATE_GENESIS_VALIDATORS_ROOT == 705)
 static_assert(STATE_BLOCK_ROOTS == 709)
+static_assert(STATE_HISTORICAL_SUMMARIES == 731)
+static_assert(CAPELLA_FIRST_PERIOD as u256 * SLOTS_PER_HISTORICAL_ROOT
+    == CAPELLA_FIRST_SLOT as u256)
 static_assert(STATE_FORK_CURRENT_VERSION == 2829)
 
 pub enum PayloadField {
@@ -547,6 +555,21 @@ pub const fn block_root_element_gindex(_ index: u64) -> GIndex {
     )
 }
 
+pub const fn summary_block_root_gindex(_ index: u64) -> GIndex {
+    if index as u256 >= HISTORICAL_SUMMARIES_LIMIT {
+        core::panic_code(PANIC_ASSERT)
+    }
+    GIndex::new(
+        concat(
+            STATE_HISTORICAL_SUMMARIES,
+            concat(
+                concat(2, HISTORICAL_SUMMARIES_LIMIT + index as u256),
+                field(SUMMARY_FIELDS, 0),
+            ),
+        ),
+    )
+}
+
 pub const fn validator_element_gindex(_ index: u64) -> GIndex {
     if index as u256 >= VALIDATOR_REGISTRY_LIMIT {
         core::panic_code(PANIC_ASSERT)
@@ -565,6 +588,9 @@ pub const fn validator_gindex(_ index: u64, _ which: ValidatorField) -> GIndex {
     )
 }
 
+static_assert(summary_block_root_gindex(0).value() == 49056579584)
+static_assert(summary_block_root_gindex(1).value() == 49056579586)
+static_assert(summary_block_root_gindex(1155).value() == 49056581894)
 static_assert(block_root_element_gindex(0).value() == 5808128)
 static_assert(block_root_element_gindex(1).value() == 5808129)
 static_assert(block_root_element_gindex(8191).value() == 5816319)
@@ -705,6 +731,36 @@ pub fn verify_historical_root<P: ProofNodes>(
         leaf: historical_root,
         gindex: block_root_element_gindex(slot % 8192),
         branch,
+    )
+}
+
+pub fn verify_deep_historical_root<P: ProofNodes, Q: ProofNodes>(
+    beacon_root: BeaconRoot,
+    header_slot: u64,
+    slot: u64,
+    historical_root: u256,
+    summary_root: u256,
+    summary_branch: P,
+    vector_branch: Q,
+) -> Result<ProofError, ()> {
+    if slot < CAPELLA_FIRST_SLOT {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    let period = slot / 8192
+    if period >= header_slot / 8192 {
+        return Result::Err(ProofError::IndexOutOfRange)
+    }
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf: summary_root,
+        gindex: summary_block_root_gindex(period - CAPELLA_FIRST_PERIOD),
+        branch: summary_branch,
+    )?
+    verify_branch(
+        root: Root::new(summary_root),
+        leaf: historical_root,
+        gindex: GIndex::new(SLOTS_PER_HISTORICAL_ROOT + (slot % 8192) as u256),
+        branch: vector_branch,
     )
 }
 

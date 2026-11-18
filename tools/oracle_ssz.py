@@ -68,11 +68,16 @@ STATE_LATEST_EXECUTION_PAYLOAD_HEADER = 24
 STATE_VALIDATORS = 11
 STATE_BLOCK_ROOTS = 5
 SLOTS_PER_HISTORICAL_ROOT = 8192
+STATE_HISTORICAL_SUMMARIES = 27
+HISTORICAL_SUMMARIES_LIMIT = 1 << 24
+SUMMARY_FIELDS = 2
+CAPELLA_FIRST_PERIOD = 758
+CAPELLA_FIRST_SLOT = CAPELLA_FIRST_PERIOD * SLOTS_PER_HISTORICAL_ROOT
 VALIDATOR_INDEX = {"pubkey": 0, "withdrawal_credentials": 1, "effective_balance": 2}
 VALIDATOR_EPOCHS = ("activation_eligibility_epoch", "activation_epoch", "exit_epoch", "withdrawable_epoch")
 LIST_LENGTH_SIBLING = 3 + VALIDATOR_REGISTRY_DEPTH
 
-BEACON_KINDS = ("beacon_chain", "beacon_validator", "beacon_history")
+BEACON_KINDS = ("beacon_chain", "beacon_validator", "beacon_history", "beacon_deephistory")
 FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 CONSENSUS_VERSION = "fulu"
 HEADER_KEYS = {"slot", "proposer_index", "parent_root", "state_root", "body_root"}
@@ -82,6 +87,7 @@ VALIDATOR_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "ca
 VALIDATOR_RECORD_KEYS = {"pubkey", "withdrawal_credentials", "effective_balance", "slashed", *VALIDATOR_EPOCHS}
 CAPTURE_KEYS = {"finalized", "canonical"}
 HISTORY_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "capture", "targetSlot", "historicalRoot", "proofs"}
+DEEPHISTORY_KEYS = {"name", "kind", "consensusVersion", "beacon", "execution", "capture", "targetSlot", "historicalRoot", "summaryIndex", "summaryRoot", "proofs"}
 
 
 class CheckError(Exception):
@@ -146,6 +152,14 @@ def block_root_element_gindex(index):
     if not 0 <= index < SLOTS_PER_HISTORICAL_ROOT:
         raise CheckError(f"block root index {index} outside the historical vector")
     return concat(field_gindex(STATE_FIELDS, STATE_BLOCK_ROOTS), SLOTS_PER_HISTORICAL_ROOT + index)
+
+
+def summary_block_root_gindex(index):
+    if not 0 <= index < HISTORICAL_SUMMARIES_LIMIT:
+        raise CheckError(f"summary index {index} outside the list limit")
+    summaries = field_gindex(STATE_FIELDS, STATE_HISTORICAL_SUMMARIES)
+    element = concat(concat(summaries, 2), HISTORICAL_SUMMARIES_LIMIT + index)
+    return concat(element, field_gindex(SUMMARY_FIELDS, 0))
 
 
 def validator_element_gindex(index):
@@ -480,6 +494,58 @@ def analyze_history(fixture, fixtures_dir):
     }
 
 
+def analyze_deephistory(fixture, fixtures_dir):
+    root, header = check_beacon(fixture, DEEPHISTORY_KEYS)
+    execution = check_execution(fixture["execution"], {"header", "childHeader"}, root, header["slot"])
+    expect_keys(fixture["capture"], CAPTURE_KEYS, "capture")
+    if fixture["capture"]["finalized"] is not True or fixture["capture"]["canonical"] is not True:
+        raise CheckError("capture did not record a finalized canonical block")
+    target = decimal(fixture["targetSlot"], "targetSlot")
+    slot = header["slot"]
+    if target < CAPELLA_FIRST_SLOT:
+        raise CheckError(f"target slot {target} is before Capella")
+    period = target // SLOTS_PER_HISTORICAL_ROOT
+    if period >= slot // SLOTS_PER_HISTORICAL_ROOT:
+        raise CheckError(f"target slot {target} is in the anchor's own period")
+    summary_index = decimal(fixture["summaryIndex"], "summaryIndex")
+    if summary_index != period - CAPELLA_FIRST_PERIOD:
+        raise CheckError(f"summary index {summary_index} does not match period {period}")
+    position = target % SLOTS_PER_HISTORICAL_ROOT
+    summary_root = word(fixture["summaryRoot"])
+    stored = word(fixture["historicalRoot"])
+    expected = {
+        f"historical_summaries[{summary_index}].block_summary_root": (
+            from_block_root(summary_block_root_gindex(summary_index)), summary_root,
+        ),
+        "genesis_validators_root": (from_block_root(state_gindex("genesis_validators_root")), MAINNET_GENESIS_VALIDATORS_ROOT),
+        "fork.current_version": (from_block_root(state_gindex("fork.current_version")), FULU_FORK_VERSION + bytes(28)),
+        "latest_execution_payload_header.block_hash": (
+            from_block_root(state_gindex("latest_execution_payload_header.block_hash")),
+            execution["hash"],
+        ),
+    }
+    vector_name = f"block_summary[{position}]"
+    vector_entries = [p for p in fixture["proofs"] if isinstance(p, dict) and p.get("field") == vector_name]
+    if len(vector_entries) != 1:
+        raise CheckError(f"the fixture must hold exactly one proof named {vector_name}")
+    state_proofs = [p for p in fixture["proofs"] if not (isinstance(p, dict) and p.get("field") == vector_name)]
+    proofs = parse_proofs(state_proofs, expected, root)
+    vector_proofs = parse_proofs(vector_entries, {vector_name: (SLOTS_PER_HISTORICAL_ROOT + position, stored)}, summary_root)
+    return {
+        "kind": "beacon_deephistory",
+        "root": root,
+        "header": header,
+        "execution": execution,
+        "target": target,
+        "period": period,
+        "summary_index": summary_index,
+        "position": position,
+        "summary_root": summary_root,
+        "historical_root": stored,
+        "proofs": {**proofs, **vector_proofs},
+    }
+
+
 def analyze(fixture, fixtures_dir):
     kind = fixture.get("kind") if isinstance(fixture, dict) else None
     if kind == "beacon_chain":
@@ -488,6 +554,8 @@ def analyze(fixture, fixtures_dir):
         return analyze_validator(fixture, fixtures_dir)
     if kind == "beacon_history":
         return analyze_history(fixture, fixtures_dir)
+    if kind == "beacon_deephistory":
+        return analyze_deephistory(fixture, fixtures_dir)
     raise CheckError(f"not a beacon fixture: kind {kind!r}")
 
 
@@ -500,6 +568,11 @@ def check_fixture(fixture, fixtures_dir):
     )
     if result["kind"] == "beacon_chain":
         lines.append("payload state_root, block_number, block_hash proven; trie fixtures linked")
+    elif result["kind"] == "beacon_deephistory":
+        lines.append(
+            f"latest block root at or before slot {result['target']} (period {result['period']}) proven "
+            f"through summary {result['summary_index']} from the anchor at slot {result['header']['slot']}"
+        )
     elif result["kind"] == "beacon_history":
         lines.append(
             f"latest block root at or before slot {result['target']} proven from the anchor at slot "

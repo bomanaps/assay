@@ -174,6 +174,18 @@ def render_beacon(fixture):
         ]
         names = {f"block_roots[{result['position']}]": "BLOCK_ROOTS_ELEMENT"}
         names.update(STATE_PROOFS)
+    elif result["kind"] == "beacon_deephistory":
+        parts += [
+            const("TARGET_SLOT", "u64", result["target"]),
+            const("HISTORICAL_ROOT", "u256", word(result["historical_root"])),
+            const("SUMMARY_INDEX", "u64", result["summary_index"]),
+            const("SUMMARY_ROOT", "u256", word(result["summary_root"])),
+        ]
+        names = {
+            f"historical_summaries[{result['summary_index']}].block_summary_root": "SUMMARY_BLOCK_ROOT",
+            f"block_summary[{result['position']}]": "BLOCK_SUMMARY_ELEMENT",
+        }
+        names.update(STATE_PROOFS)
     else:
         record = result["record"]
         parts += [

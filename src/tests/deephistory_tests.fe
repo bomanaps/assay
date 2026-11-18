@@ -1,0 +1,235 @@
+use ingot::fixtures::history_capella_first as d
+use ingot::beacon::{summary_block_root_gindex, CAPELLA_FIRST_SLOT}
+use ingot::{
+    verify_deep_historical_root,
+    BeaconProver,
+    BeaconRoot,
+    Branch,
+    Header,
+    InvalidProof,
+    ProofError,
+    ProverMsg,
+}
+use core::{MemBuffer, MemVec}
+use std::abi::{Bytes32, DynArray}
+use std::evm::{Address, CallOutcome, Evm, RawOps, is_error}
+
+fn anchor() -> BeaconRoot {
+    BeaconRoot::new(d::BLOCK_ROOT)
+}
+
+#[test]
+fn the_first_capella_slot_is_proven_from_todays_anchor() {
+    core::assert(d::TARGET_SLOT == CAPELLA_FIRST_SLOT)
+    core::assert(
+        d::SUMMARY_BLOCK_ROOT_GINDEX == summary_block_root_gindex(d::SUMMARY_INDEX).value(),
+    )
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::TARGET_SLOT,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn a_pre_capella_slot_is_refused() {
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: CAPELLA_FIRST_SLOT - 1,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Err(ProofError::IndexOutOfRange) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_slot_in_the_anchors_own_period_is_refused() {
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::SLOT - 1,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Err(ProofError::IndexOutOfRange) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_distant_position_cannot_reuse_the_vector_branch() {
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::TARGET_SLOT + 4096,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_flipped_summary_branch_word_is_refused() {
+    var tampered = d::SUMMARY_BLOCK_ROOT_BRANCH
+    tampered[9] = tampered[9] ^ 1
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::TARGET_SLOT,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(tampered),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_flipped_vector_branch_word_is_refused() {
+    var tampered = d::BLOCK_SUMMARY_ELEMENT_BRANCH
+    tampered[6] = tampered[6] ^ 1
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::TARGET_SLOT,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(tampered),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_forged_summary_root_cannot_bridge_the_two_hops() {
+    match verify_deep_historical_root(
+        beacon_root: anchor(),
+        header_slot: d::SLOT,
+        slot: d::TARGET_SLOT,
+        historical_root: d::HISTORICAL_ROOT,
+        summary_root: d::SUMMARY_ROOT ^ 1,
+        summary_branch: Branch::new(d::SUMMARY_BLOCK_ROOT_BRANCH),
+        vector_branch: Branch::new(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+const GAS: u256 = 30000000
+const OPEN_END: u64 = 0xffffffffffffffff
+const ROOT_MISMATCH_CODE: u256 = 8
+
+contract DeepMockRoots uses (ops: RawOps) {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+fn header() -> Header {
+    Header {
+        slot: d::SLOT,
+        proposer_index: d::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: d::PARENT_ROOT },
+        state_root: Bytes32 { val: d::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: d::BODY_ROOT },
+    }
+}
+
+fn words<const N: usize>(_ values: [u256; N]) -> DynArray<Bytes32> {
+    var out: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < N {
+        out.push(Bytes32 { val: values[i] })
+        i += 1
+    }
+    DynArray::from_mem_vec(out)
+}
+
+fn deep_prover() -> Address uses (evm: mut Evm) {
+    let roots = evm
+        .create2<DeepMockRoots>(
+            value: Wei::zero(),
+            args: (d::CHILD_TIMESTAMP as u256, d::BLOCK_ROOT),
+            salt: 0,
+        )
+    evm.create2<BeaconProver>(value: Wei::zero(), args: (roots, OPEN_END), salt: 0)
+}
+
+fn deep_call(prover: Address, root: u256) -> CallOutcome uses (evm: mut Evm) {
+    evm.try_call(
+        addr: prover,
+        gas: GAS,
+        value: Wei::zero(),
+        message: ProverMsg::ProveDeepHistoricalRoot {
+            timestamp: d::CHILD_TIMESTAMP,
+            header: header(),
+            slot: d::TARGET_SLOT,
+            historical_root: Bytes32 { val: root },
+            summary_root: Bytes32 { val: d::SUMMARY_ROOT },
+            summary_branch: words(d::SUMMARY_BLOCK_ROOT_BRANCH),
+            vector_branch: words(d::BLOCK_SUMMARY_ELEMENT_BRANCH),
+        },
+    )
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_capella_era_root_is_proven_through_the_contract() uses (evm: mut Evm) {
+    let prover = deep_prover()
+    let outcome = deep_call(prover, root: d::HISTORICAL_ROOT)
+    core::assert(outcome.success())
+    let data = outcome.returndata()
+    core::assert(data.len() == 64)
+    core::assert(data.read_word(0) == d::TARGET_SLOT as u256)
+    core::assert(data.read_word(32) == d::SLOT as u256)
+}
+
+#[cfg(target = "evm")]
+#[test]
+fn a_forged_ancient_root_reverts_on_chain() uses (evm: mut Evm) {
+    let prover = deep_prover()
+    let outcome = deep_call(prover, root: d::HISTORICAL_ROOT ^ 1)
+    core::assert(!outcome.success())
+    core::assert(is_error<InvalidProof>(outcome.returndata()))
+    core::assert(outcome.returndata().read_word(4) == ROOT_MISMATCH_CODE)
+}

@@ -34,6 +34,7 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -474,6 +475,154 @@ def history(state_path, slot_text, fixture_name):
     stage_and_commit([fixture], [row])
 
 
+def fetch_period_roots(period):
+    import concurrent.futures
+    first = period * oracle_ssz.SLOTS_PER_HISTORICAL_ROOT
+
+    def header_root(slot):
+        for attempt in range(6):
+            try:
+                reply = beacon_get(f"/eth/v1/beacon/headers/{slot}", allow_missing=True)
+                return None if reply is None else reply["data"]["root"]
+            except (SystemExit, Exception):
+                if attempt == 5:
+                    raise
+                time.sleep(1 + attempt)
+
+    carry = None
+    probe = first - 1
+    while carry is None:
+        carry = header_root(probe)
+        probe -= 1
+        if first - probe > 64:
+            fail(f"no canonical block found within 64 slots before {first}")
+    slots = list(range(first, first + oracle_ssz.SLOTS_PER_HISTORICAL_ROOT))
+    fetched = [None] * len(slots)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for position, root in zip(range(len(slots)), pool.map(header_root, slots)):
+            fetched[position] = root
+            if (position + 1) % 1024 == 0:
+                print(f"  fetched {position + 1}/8192 headers of period {period}")
+    roots = []
+    for root in fetched:
+        if root is not None:
+            carry = root
+        roots.append(carry)
+    return roots
+
+
+def deephistory(state_path, slot_text, fixture_name):
+    if not DECIMAL_PATTERN.fullmatch(slot_text):
+        fail(f"target slot must be a decimal number: {slot_text}")
+    if not HISTORY_NAME_PATTERN.fullmatch(fixture_name):
+        fail(f"fixture name must look like history_<word>: {fixture_name}")
+    target = int(slot_text)
+    chain_id = check_network()
+    url = env("RPC_URL")
+    state = t.BeaconState.decode_bytes(pathlib.Path(state_path).read_bytes())
+    if bytes(state.genesis_validators_root) != oracle_ssz.MAINNET_GENESIS_VALIDATORS_ROOT:
+        fail("state is not a mainnet state")
+    if bytes(state.fork.current_version) != oracle_ssz.FULU_FORK_VERSION:
+        fail(f"state fork version {hex32(state.fork.current_version)} is not Fulu")
+    state_root = hex32(state.hash_tree_root())
+    slot = int(state.slot)
+    if target < oracle_ssz.CAPELLA_FIRST_SLOT:
+        fail(f"slot {target} is before Capella; historical_summaries begin at {oracle_ssz.CAPELLA_FIRST_SLOT}")
+    period = target // oracle_ssz.SLOTS_PER_HISTORICAL_ROOT
+    if period >= slot // oracle_ssz.SLOTS_PER_HISTORICAL_ROOT:
+        fail(f"slot {target} is in the anchor's own period; use the history command instead")
+    summary_index = period - oracle_ssz.CAPELLA_FIRST_PERIOD
+    if summary_index >= len(state.historical_summaries):
+        fail(f"summary {summary_index} does not exist; the state holds {len(state.historical_summaries)}")
+    if len(state.historical_summaries) != slot // oracle_ssz.SLOTS_PER_HISTORICAL_ROOT - oracle_ssz.CAPELLA_FIRST_PERIOD:
+        fail("the summaries length does not match the Capella period mapping")
+    summary_root = hex32(state.historical_summaries[summary_index].block_summary_root)
+    print(f"rebuilding the 8192-root vector of period {period} from beacon headers")
+    roots = fetch_period_roots(period)
+    vector_cls = type(state.block_roots)
+    vector = vector_cls(*[bytes.fromhex(r[2:]) for r in roots])
+    rebuilt = hex32(vector.hash_tree_root())
+    if rebuilt != summary_root:
+        fail(
+            f"rebuilt vector root {rebuilt} differs from the chain's summary {summary_root}; "
+            "the reconstruction is wrong and nothing is written"
+        )
+    position = target % oracle_ssz.SLOTS_PER_HISTORICAL_ROOT
+    stored = roots[position]
+    vector_leaf, vector_siblings = branch(vector.get_backing(), oracle_ssz.SLOTS_PER_HISTORICAL_ROOT + position)
+    if hex32(vector_leaf) != stored:
+        fail("vector branch does not end at the reconstructed root")
+    response = beacon_get(f"/eth/v1/beacon/headers/{slot}")
+    if response.get("finalized") is not True or response["data"].get("canonical") is not True:
+        fail(f"the block at slot {slot} is not reported finalized and canonical")
+    message = response["data"]["header"]["message"]
+    if message["state_root"] != state_root:
+        fail(f"computed state root {state_root} differs from the header's {message['state_root']}")
+    beacon_root = response["data"]["root"]
+    beacon_header = t.BeaconBlockHeader.from_obj(message)
+    if hex32(beacon_header.hash_tree_root()) != beacon_root:
+        fail("computed header root differs from the reported block root")
+    payload = state.latest_execution_payload_header
+    number = int(payload.block_number)
+    header = capture_getproof.block_header(url, hex(number))
+    child = capture_getproof.block_header(url, hex(number + 1))
+    if header["hash"] != hex32(payload.block_hash) or child["parentHash"] != header["hash"]:
+        fail("execution blocks do not match the state's latest payload")
+    if child["parentBeaconBlockRoot"] != beacon_root:
+        fail("the child execution block does not name this beacon block")
+    header_position = oracle_ssz.field_gindex(oracle_ssz.HEADER_FIELDS, oracle_ssz.HEADER_STATE_ROOT)
+    header_leaf, header_siblings = branch(beacon_header.get_backing(), header_position)
+    if hex32(header_leaf) != state_root:
+        fail("header branch does not end at the state root")
+    in_state = {
+        f"historical_summaries[{summary_index}].block_summary_root": oracle_ssz.summary_block_root_gindex(summary_index),
+        "genesis_validators_root": oracle_ssz.state_gindex("genesis_validators_root"),
+        "fork.current_version": oracle_ssz.state_gindex("fork.current_version"),
+        "latest_execution_payload_header.block_hash": oracle_ssz.state_gindex(
+            "latest_execution_payload_header.block_hash"
+        ),
+    }
+    type_keys = {
+        f"historical_summaries[{summary_index}].block_summary_root": [
+            "historical_summaries", summary_index, "block_summary_root",
+        ],
+        "genesis_validators_root": ["genesis_validators_root"],
+        "fork.current_version": ["fork", "current_version"],
+        "latest_execution_payload_header.block_hash": ["latest_execution_payload_header", "block_hash"],
+    }
+    check_positions(t.BeaconState, type_keys, in_state)
+    proofs = []
+    for name, gindex in in_state.items():
+        leaf, siblings = branch(state.get_backing(), gindex)
+        proofs.append(proof_json(name, oracle_ssz.from_block_root(gindex), leaf, siblings + header_siblings))
+    proofs.append(
+        proof_json(
+            f"block_summary[{position}]",
+            oracle_ssz.SLOTS_PER_HISTORICAL_ROOT + position,
+            vector_leaf,
+            vector_siblings,
+        )
+    )
+    fixture = {
+        "name": fixture_name,
+        "kind": "beacon_deephistory",
+        "consensusVersion": oracle_ssz.CONSENSUS_VERSION,
+        "beacon": {"blockRoot": beacon_root, "header": header_json(beacon_header)},
+        "execution": {"header": header, "childHeader": child},
+        "capture": {"finalized": True, "canonical": True},
+        "targetSlot": str(target),
+        "historicalRoot": stored,
+        "summaryIndex": str(summary_index),
+        "summaryRoot": summary_root,
+        "proofs": proofs,
+    }
+    row = capture_getproof.readme_row(
+        fixture_name, "beacon_deephistory", chain_id, f"slot {slot}", beacon_root, state_root,
+        f"capture_beacon.py deephistory <finalized state at slot {slot}> {target} {fixture_name}",
+    )
+    stage_and_commit([fixture], [row])
+
+
 def main(argv):
     if len(argv) == 2 and argv[1] == "chain":
         chain()
@@ -481,6 +630,8 @@ def main(argv):
         validator(argv[2], argv[3], argv[4])
     elif len(argv) == 5 and argv[1] == "history":
         history(argv[2], argv[3], argv[4])
+    elif len(argv) == 5 and argv[1] == "deephistory":
+        deephistory(argv[2], argv[3], argv[4])
     else:
         fail(__doc__)
 
