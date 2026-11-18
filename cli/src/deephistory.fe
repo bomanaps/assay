@@ -1,0 +1,349 @@
+use core::MemSpan
+use core::text::hex
+use json::Value
+use std::io::Stdout
+use verifier::ssz::{concat, field}
+use verifier::beacon::{summary_block_root_gindex, CAPELLA_FIRST_PERIOD, CAPELLA_FIRST_SLOT}
+use verifier::{verify_branch, verify_deep_historical_root, GIndex, StateField}
+use ingot::beacon_input::{read_anchor, read_proof, Anchor, AnchorOutcome}
+use ingot::input::{decimal_u64_field, word_field}
+
+const MAINNET_GENESIS_VALIDATORS_ROOT: u256 = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95
+const FULU_FORK_VERSION_LEAF: u256 = 0x0600000000000000000000000000000000000000000000000000000000000000
+const LATEST_BLOCK_HASH_GINDEX: u256 = concat(field(5, 3), concat(field(38, 24), field(17, 12)))
+
+static_assert(LATEST_BLOCK_HASH_GINDEX == 23308)
+
+const GENESIS_FIELD: String<23> = "genesis_validators_root"
+const FORK_FIELD: String<20> = "fork.current_version"
+const BLOCK_HASH_FIELD_HEAD: String<31> = "latest_execution_payload_header"
+const BLOCK_HASH_FIELD_TAIL: String<11> = ".block_hash"
+const SUMMARY_FIELD_HEAD: String<21> = "historical_summaries["
+const SUMMARY_FIELD_TAIL: String<20> = "].block_summary_root"
+const VECTOR_FIELD_HEAD: String<14> = "block_summary["
+const SLOTS_PER_HISTORICAL_ROOT: u64 = 8192
+
+fn block_hash_field_name() -> core::MemBuffer {
+    var name = core::MemBuffer::with_capacity(42)
+    ingot::input::push_string(mut name, BLOCK_HASH_FIELD_HEAD)
+    ingot::input::push_string(mut name, BLOCK_HASH_FIELD_TAIL)
+    name
+}
+
+fn summary_proof_name(index: u64) -> core::MemBuffer {
+    var name = core::MemBuffer::with_capacity(48)
+    ingot::input::push_string(mut name, SUMMARY_FIELD_HEAD)
+    index.fmt(mut name)
+    ingot::input::push_string(mut name, SUMMARY_FIELD_TAIL)
+    name
+}
+
+fn vector_proof_name(position: u64) -> core::MemBuffer {
+    var name = core::MemBuffer::with_capacity(24)
+    ingot::input::push_string(mut name, VECTOR_FIELD_HEAD)
+    position.fmt(mut name)
+    name.push(0x5d)
+    name
+}
+
+fn checked_branch(
+    _ document: Value,
+    _ name: MemSpan,
+    expected_gindex: u256,
+    expected_leaf: u256,
+    _ anchor: Anchor,
+) -> i32
+uses (out: mut Stdout)
+{
+    let proof = match read_proof(document, name) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!("FAIL the file holds no well-formed proof named ", name)
+            return 2
+        },
+    }
+    if proof.gindex != expected_gindex {
+        println!(
+            "FAIL ",
+            name,
+            " claims gindex ",
+            proof.gindex,
+            ", Fulu puts it at ",
+            expected_gindex,
+        )
+        return 1
+    }
+    if proof.leaf != expected_leaf {
+        println!(
+            "FAIL ",
+            name,
+            ": the recorded leaf does not encode the file's claimed value",
+        )
+        return 1
+    }
+    match verify_branch(
+        root: anchor.root.as_root(),
+        leaf: proof.leaf,
+        gindex: GIndex::new(proof.gindex),
+        branch: proof.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   ",
+                name,
+                " proven (gindex ",
+                proof.gindex,
+                ", ",
+                proof.branch.len(),
+                " siblings)",
+            )
+            0
+        },
+        Result::Err(_) => {
+            println!("FAIL ", name, ": branch does not reach the anchor root")
+            1
+        },
+    }
+}
+
+pub fn verify_deephistory_file(_ document: Value) -> i32 uses (out: mut Stdout) {
+    let anchor = match read_anchor(document) {
+        AnchorOutcome::Proven(anchor) => anchor,
+        AnchorOutcome::Refuted => {
+            return 1
+        },
+        AnchorOutcome::Malformed => {
+            return 2
+        },
+    }
+    let target = match decimal_u64_field(document, "targetSlot") {
+        Option::Some(target) => target,
+        Option::None => {
+            println!("FAIL the file holds no well-formed targetSlot")
+            return 2
+        },
+    }
+    let claimed_root = match word_field(document, "historicalRoot") {
+        Option::Some(claimed_root) => claimed_root,
+        Option::None => {
+            println!("FAIL the file holds no well-formed historicalRoot")
+            return 2
+        },
+    }
+    let claimed_summary = match word_field(document, "summaryRoot") {
+        Option::Some(claimed_summary) => claimed_summary,
+        Option::None => {
+            println!("FAIL the file holds no well-formed summaryRoot")
+            return 2
+        },
+    }
+    let summary_index = match decimal_u64_field(document, "summaryIndex") {
+        Option::Some(summary_index) => summary_index,
+        Option::None => {
+            println!("FAIL the file holds no well-formed summaryIndex")
+            return 2
+        },
+    }
+    if target < CAPELLA_FIRST_SLOT {
+        println!(
+            "FAIL slot ",
+            target,
+            " is before Capella; summaries begin at slot ",
+            CAPELLA_FIRST_SLOT,
+        )
+        return 1
+    }
+    let period = target / SLOTS_PER_HISTORICAL_ROOT
+    if period >= anchor.slot / SLOTS_PER_HISTORICAL_ROOT {
+        println!(
+            "FAIL slot ",
+            target,
+            " is in the anchor's own period; its root lives in block_roots, not the summaries",
+        )
+        return 1
+    }
+    if summary_index != period - CAPELLA_FIRST_PERIOD {
+        println!(
+            "FAIL summary index ",
+            summary_index,
+            " does not match period ",
+            period,
+        )
+        return 1
+    }
+    let position = target % SLOTS_PER_HISTORICAL_ROOT
+    let summary_name = summary_proof_name(index: summary_index)
+    let summary = match read_proof(document, summary_name.span()) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!(
+                "FAIL the file holds no well-formed proof named ",
+                summary_name,
+            )
+            return 2
+        },
+    }
+    if summary.gindex != summary_block_root_gindex(summary_index).value() {
+        println!(
+            "FAIL ",
+            summary_name,
+            " claims gindex ",
+            summary.gindex,
+            ", Fulu puts it at ",
+            summary_block_root_gindex(summary_index).value(),
+        )
+        return 1
+    }
+    if summary.leaf != claimed_summary {
+        println!(
+            "FAIL the recorded summary leaf does not encode the file's claimed summary root",
+        )
+        return 1
+    }
+    let vector_name = vector_proof_name(position: position)
+    let vector = match read_proof(document, vector_name.span()) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!(
+                "FAIL the file holds no well-formed proof named ",
+                vector_name,
+            )
+            return 2
+        },
+    }
+    if vector.gindex != (SLOTS_PER_HISTORICAL_ROOT + position) as u256 {
+        println!(
+            "FAIL ",
+            vector_name,
+            " claims gindex ",
+            vector.gindex,
+            ", the 8192-root vector puts it at ",
+            SLOTS_PER_HISTORICAL_ROOT + position,
+        )
+        return 1
+    }
+    if vector.leaf != claimed_root {
+        println!(
+            "FAIL the recorded vector leaf does not encode the file's claimed historical root",
+        )
+        return 1
+    }
+    match verify_deep_historical_root(
+        beacon_root: anchor.root,
+        header_slot: anchor.slot,
+        slot: target,
+        historical_root: claimed_root,
+        summary_root: claimed_summary,
+        summary_branch: summary.branch.as_slice(),
+        vector_branch: vector.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   latest block root at or before slot ",
+                target,
+                " proven: 0x",
+                hex(claimed_root, 32),
+                " (",
+                anchor.slot - target,
+                " slots before the anchor, through summary ",
+                summary_index,
+                ")",
+            )
+        },
+        Result::Err(_) => {
+            println!(
+                "FAIL the two-hop historical proof does not reach the anchor root",
+            )
+            return 1
+        },
+    }
+    let genesis_name = ingot::input::string_buffer(GENESIS_FIELD)
+    let genesis_code = checked_branch(
+        document,
+        genesis_name.span(),
+        expected_gindex: StateField::GenesisValidatorsRoot.gindex().value(),
+        expected_leaf: MAINNET_GENESIS_VALIDATORS_ROOT,
+        anchor,
+    )
+    if genesis_code != 0 {
+        return genesis_code
+    }
+    let fork_name = ingot::input::string_buffer(FORK_FIELD)
+    let fork_code = checked_branch(
+        document,
+        fork_name.span(),
+        expected_gindex: StateField::ForkCurrentVersion.gindex().value(),
+        expected_leaf: FULU_FORK_VERSION_LEAF,
+        anchor,
+    )
+    if fork_code != 0 {
+        return fork_code
+    }
+    let block_hash_name = block_hash_field_name()
+    let block_hash = match read_proof(document, block_hash_name.span()) {
+        Option::Some(proof) => proof,
+        Option::None => {
+            println!(
+                "FAIL the file holds no well-formed proof named ",
+                block_hash_name,
+            )
+            return 2
+        },
+    }
+    if block_hash.gindex != LATEST_BLOCK_HASH_GINDEX {
+        println!(
+            "FAIL latest payload block hash claims gindex ",
+            block_hash.gindex,
+            ", Fulu puts it at ",
+            LATEST_BLOCK_HASH_GINDEX,
+        )
+        return 1
+    }
+    let claimed_hash = match document.get("execution") {
+        Option::Some(ref execution) => {
+            match execution.get("header") {
+                Option::Some(ref header) => word_field(header, "hash"),
+                Option::None => Option::None,
+            }
+        },
+        Option::None => Option::None,
+    }
+    match claimed_hash {
+        Option::Some(hash_claim) => {
+            if block_hash.leaf != hash_claim {
+                println!(
+                    "FAIL the proven latest block hash does not match the execution header's claim",
+                )
+                return 1
+            }
+        },
+        Option::None => {
+            println!("FAIL the file holds no well-formed execution header hash")
+            return 2
+        },
+    }
+    match verify_branch(
+        root: anchor.root.as_root(),
+        leaf: block_hash.leaf,
+        gindex: GIndex::new(block_hash.gindex),
+        branch: block_hash.branch.as_slice(),
+    ) {
+        Result::Ok(()) => {
+            println!(
+                "ok   state's latest execution block hash 0x",
+                hex(block_hash.leaf, 32),
+                " proven",
+            )
+        },
+        Result::Err(_) => {
+            println!(
+                "FAIL latest payload block hash: branch does not reach the anchor root",
+            )
+            return 1
+        },
+    }
+    println!(
+        "verified: a block root of any age, the chain identity and the execution link are proven from the beacon root alone",
+    )
+    0
+}

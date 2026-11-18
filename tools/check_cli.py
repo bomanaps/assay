@@ -58,6 +58,28 @@ HISTORY_TAMPERS = [
 ]
 
 
+DEEPHISTORY_TAMPERS = [
+    ("pre-capella target", 1, "is before Capella", lambda f: f.update(targetSlot="6209535")),
+    ("anchor-period target", 1, "anchor's own period", lambda f: f.update(targetSlot=str(int(f["beacon"]["header"]["slot"]) - 100))),
+    ("summary index", 1, "does not match period", lambda f: f.update(summaryIndex=str(int(f["summaryIndex"]) + 1))),
+    ("summary root claim", 1, "does not encode the file's claimed summary root", lambda f: f.update(summaryRoot=flip(f["summaryRoot"]))),
+    ("historical root claim", 1, "does not encode the file's claimed historical root", lambda f: f.update(historicalRoot=flip(f["historicalRoot"]))),
+    ("summary branch word", 1, "two-hop historical proof does not reach", lambda f: deep_summary_proof(f)["branch"].__setitem__(4, flip(deep_summary_proof(f)["branch"][4]))),
+    ("vector branch word", 1, "two-hop historical proof does not reach", lambda f: deep_vector_proof(f)["branch"].__setitem__(4, flip(deep_vector_proof(f)["branch"][4]))),
+    ("missing vector proof", 2, "no well-formed proof named block_summary", lambda f: f["proofs"].remove(deep_vector_proof(f))),
+]
+
+
+def deep_summary_proof(fixture):
+    index = int(fixture["summaryIndex"])
+    return proof(fixture, f"historical_summaries[{index}].block_summary_root")
+
+
+def deep_vector_proof(fixture):
+    position = int(fixture["targetSlot"]) % 8192
+    return proof(fixture, f"block_summary[{position}]")
+
+
 def history_proof(fixture):
     position = int(fixture["targetSlot"]) % 8192
     return proof(fixture, f"block_roots[{position}]")
@@ -115,7 +137,7 @@ def main(argv):
     failures = []
     with tempfile.TemporaryDirectory() as scratch_text:
         scratch = pathlib.Path(scratch_text)
-        for name in ("chain_beacon", "validator_beacon", "validator_slashed", "history_day_old"):
+        for name in ("chain_beacon", "validator_beacon", "validator_slashed", "history_day_old", "history_capella_first"):
             code, output = run(binary, fixtures / f"{name}.json")
             expect(f"{name} verifies", 0, "verified:", code, output, failures)
         linked = json.loads((fixtures / "chain_beacon.json").read_text())
@@ -175,6 +197,14 @@ def main(argv):
             history_path.write_text(json.dumps(tampered))
             code, output = run(binary, history_path)
             expect(f"history {label}", expected_code, needle, code, output, failures)
+        original_deep = json.loads((fixtures / "history_capella_first.json").read_text())
+        deep_path = scratch / "history_capella_first.json"
+        for label, expected_code, needle, tamper in DEEPHISTORY_TAMPERS:
+            tampered = copy.deepcopy(original_deep)
+            tamper(tampered)
+            deep_path.write_text(json.dumps(tampered))
+            code, output = run(binary, deep_path)
+            expect(f"deephistory {label}", expected_code, needle, code, output, failures)
         original_validator = json.loads((fixtures / "validator_beacon.json").read_text())
         for label, expected_code, needle, tamper in VALIDATOR_TAMPERS:
             tampered = copy.deepcopy(original_validator)
