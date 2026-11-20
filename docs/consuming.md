@@ -19,8 +19,8 @@ version = "0.1.0"
 verifier = { path = "../assay" }
 ```
 
-A relative path is required; a git dependency works the same way once the
-repository is public to you.
+Use a relative path; a git dependency works the same way once you can
+reach the repository.
 
 ## 2. Call the prover from your contract
 
@@ -142,8 +142,8 @@ fe test .
 fe test --backend native .
 ```
 
-This page's project compiled and passed both test runs, exactly as shown,
-against Fe v26.6.0.
+We built this page's project and ran all three commands against Fe
+v26.6.0 before writing it down; everything passed exactly as shown.
 
 ## Getting proof data
 

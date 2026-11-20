@@ -3,9 +3,8 @@
 Twelve test files for Merkle-Patricia proof verifiers. Two hold honest
 proofs that a correct verifier must accept. The other ten are broken in the
 exact ways that have fooled real verifiers before, and a correct verifier
-must reject every one of them. The files are plain JSON with no dependency
-on this repository, so a verifier written in any language can use them
-directly.
+must reject every one of them. The files are plain JSON with no dependency on our code, so you can use
+them against a verifier written in any language.
 
 Each vector is self-contained:
 
@@ -30,8 +29,8 @@ Each vector is self-contained:
 - `absent` means the proof honestly shows the key is not in the trie:
   accept it as a proof of absence.
 - Anything else is a rejection reason: the proof is broken and must be
-  refused. The names below are this project's own labels; a verifier with
-  its own error names passes by rejecting the file for the matching cause:
+  refused. The names below are our labels; your verifier passes by rejecting the
+file for the matching cause, whatever it calls the error:
 
 | reason | the defect |
 |---|---|
@@ -45,8 +44,8 @@ Each vector is self-contained:
 
 ## Running them
 
-Against this project's verifier, each file is one command, exit 0 meaning the
-vector behaved exactly as committed:
+Against our verifier, each file is one command, and exit 0 means the
+vector behaved exactly as we committed it:
 
 ```
 assay verify vectors/truncated_proof.json
@@ -77,7 +76,7 @@ than broken, and you should decide which of the two you meant to build.
 
 ## Provenance
 
-Every file is built deterministically by `tools/gen_vectors.py`, using the
+We build every file deterministically with `tools/gen_vectors.py`, using the
 same node encoders that are checked against Ethereum's official trie test
 vectors. CI regenerates the whole set on every push and fails if a committed
 file differs from its generator, so nothing here can quietly drift. Before a
