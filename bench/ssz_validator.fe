@@ -754,6 +754,52 @@ pub fn verify_state_field<P: ProofNodes>(
     )
 }
 
+pub struct PqValidator {
+    pub pubkey: u256,
+    pub vrf_root: u256,
+    pub withdrawal_credentials: u256,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: u64,
+    pub activation_epoch: u64,
+    pub exit_epoch: u64,
+    pub withdrawable_epoch: u64,
+}
+
+impl Copy for PqValidator {}
+
+impl PqValidator {
+    pub fn root(self) -> u256 {
+        let slashed: u256 = if self.slashed { 1 << 248 } else { 0 }
+        let left = hash_pair(
+            hash_pair(
+                hash_pair(self.pubkey, self.vrf_root),
+                hash_pair(
+                    self.withdrawal_credentials,
+                    u64_chunk(self.effective_balance),
+                ),
+            ),
+            hash_pair(
+                hash_pair(slashed, u64_chunk(self.activation_eligibility_epoch)),
+                hash_pair(
+                    u64_chunk(self.activation_epoch),
+                    u64_chunk(self.exit_epoch),
+                ),
+            ),
+        )
+        let zero_pair = hash_pair(0, 0)
+        let zero_four = hash_pair(zero_pair, zero_pair)
+        let right = hash_pair(
+            hash_pair(
+                hash_pair(u64_chunk(self.withdrawable_epoch), 0),
+                zero_pair,
+            ),
+            zero_four,
+        )
+        hash_pair(left, right)
+    }
+}
+
 pub fn verify_historical_root<P: ProofNodes>(
     beacon_root: BeaconRoot,
     header_slot: u64,

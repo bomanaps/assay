@@ -1,0 +1,118 @@
+use ingot::fixtures::pq_state as q
+use ingot::{verify_branch, Branch, GIndex, ProofError, Root}
+
+fn root() -> Root {
+    Root::new(q::STATE_ROOT)
+}
+
+#[test]
+fn a_post_quantum_xmss_pubkey_is_proven_from_the_pq_state_root() {
+    core::assert(q::PUBKEY_LEAF == q::PUBKEY)
+    match verify_branch(
+        root: root(),
+        leaf: q::PUBKEY_LEAF,
+        gindex: GIndex::new(q::PUBKEY_GINDEX),
+        branch: Branch::new(q::PUBKEY_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn the_new_vrf_root_field_is_proven_beside_the_pubkey() {
+    core::assert(q::VRF_ROOT_GINDEX == q::PUBKEY_GINDEX + 1)
+    core::assert(q::VRF_ROOT_LEAF == q::VRF_ROOT)
+    match verify_branch(
+        root: root(),
+        leaf: q::VRF_ROOT_LEAF,
+        gindex: GIndex::new(q::VRF_ROOT_GINDEX),
+        branch: Branch::new(q::VRF_ROOT_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn the_whole_nine_field_pq_validator_record_is_proven() {
+    match verify_branch(
+        root: root(),
+        leaf: q::RECORD_LEAF,
+        gindex: GIndex::new(q::RECORD_GINDEX),
+        branch: Branch::new(q::RECORD_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn the_pq_chains_genesis_root_is_proven() {
+    match verify_branch(
+        root: root(),
+        leaf: q::GENESIS_LEAF,
+        gindex: GIndex::new(q::GENESIS_GINDEX),
+        branch: Branch::new(q::GENESIS_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn a_forged_pq_pubkey_is_refused() {
+    match verify_branch(
+        root: root(),
+        leaf: q::PUBKEY_LEAF ^ 1,
+        gindex: GIndex::new(q::PUBKEY_GINDEX),
+        branch: Branch::new(q::PUBKEY_BRANCH),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_pq_branch_cannot_prove_a_neighbours_key() {
+    match verify_branch(
+        root: root(),
+        leaf: q::PUBKEY_LEAF,
+        gindex: GIndex::new(q::PUBKEY_GINDEX + 32),
+        branch: Branch::new(q::PUBKEY_BRANCH),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn a_flipped_pq_branch_word_is_refused() {
+    var tampered = q::RECORD_BRANCH
+    tampered[6] = tampered[6] ^ 1
+    match verify_branch(
+        root: root(),
+        leaf: q::RECORD_LEAF,
+        gindex: GIndex::new(q::RECORD_GINDEX),
+        branch: Branch::new(tampered),
+    ) {
+        Result::Err(ProofError::RootMismatch) => {},
+        _ => core::assert(false),
+    }
+}
+
+#[test]
+fn fe_computes_the_nine_field_pq_record_root_itself() {
+    let record = ingot::PqValidator {
+        pubkey: q::PUBKEY,
+        vrf_root: q::VRF_ROOT,
+        withdrawal_credentials: q::RECORD_WITHDRAWAL_CREDENTIALS,
+        effective_balance: q::RECORD_EFFECTIVE_BALANCE,
+        slashed: q::RECORD_SLASHED,
+        activation_eligibility_epoch: q::RECORD_ACTIVATION_ELIGIBILITY_EPOCH,
+        activation_epoch: q::RECORD_ACTIVATION_EPOCH,
+        exit_epoch: q::RECORD_EXIT_EPOCH,
+        withdrawable_epoch: q::RECORD_WITHDRAWABLE_EPOCH,
+    }
+    core::assert(record.root() == q::RECORD_LEAF)
+}

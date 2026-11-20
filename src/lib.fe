@@ -11,6 +11,7 @@ pub use beacon::{
     verify_validator_field,
     BeaconBlockHeader,
     PayloadField,
+    PqValidator,
     StateField,
     Validator,
     ValidatorField,
