@@ -209,6 +209,41 @@ def render_beacon(fixture):
     return "".join(parts)
 
 
+def render_frame(fixture):
+    result = oracle_ssz.analyze_frame(fixture)
+    header = result["header"]
+    account_bytes, account_offsets, _ = concatenate([result["account_nodes"]])
+    slot_bytes, slot_offsets, slot_starts = concatenate(
+        [result["timestamp_nodes"], result["root_nodes"]]
+    )
+    parts = [
+        const("BLOCK_ROOT", "u256", word(result["root"])),
+        const("SLOT", "u64", header["slot"]),
+        const("PROPOSER_INDEX", "u64", header["proposer_index"]),
+        const("PARENT_ROOT", "u256", word(header["parent_root"])),
+        const("HEADER_STATE_ROOT", "u256", word(header["state_root"])),
+        const("BODY_ROOT", "u256", word(header["body_root"])),
+        const("LATEST_BLOCK_HASH_GINDEX", "u256", result["gindex"]),
+        const("LATEST_BLOCK_HASH", "u256", word(result["leaf"])),
+        word_array("LATEST_BLOCK_HASH_BRANCH", result["branch"]),
+        packed_bytes("EXECUTION_HEADER", result["header_rlp"]),
+        const("EXECUTION_STATE_ROOT", "u256", word(result["state_root"])),
+        const("BLOCK_NUMBER", "u64", result["number"]),
+        const("BLOCK_TIMESTAMP", "u64", result["timestamp"]),
+        byte_array("ADDRESS_BYTES", result["address"]),
+        const("ACCOUNT_NODE_COUNT", "usize", len(result["account_nodes"])),
+        usize_array("ACCOUNT_OFFSETS", account_offsets),
+        byte_array("ACCOUNT_BYTES", account_bytes),
+        const("TIMESTAMP_SLOT", "u256", result["timestamp_slot"]),
+        const("ROOT_SLOT", "u256", result["root_slot"]),
+        const("PARENT_BEACON_ROOT", "u256", hex(result["parent_beacon_root"])),
+        usize_array("SLOT_NODE_STARTS", slot_starts),
+        usize_array("SLOT_OFFSETS", slot_offsets),
+        byte_array("SLOT_BYTES", slot_bytes),
+    ]
+    return "".join(parts)
+
+
 def render_synthetic(fixture):
     tries = oracle_mpt.analyze_synthetic(fixture)
     roots, node_offsets, node_bytes = [], [0], bytearray()
@@ -458,6 +493,8 @@ def expected_files():
                 text = render_receipt(fixture)
             elif kind == "pq_state":
                 text = render_pq(fixture)
+            elif kind == oracle_ssz.FRAME_KIND:
+                text = render_frame(fixture)
             elif kind == oracle_mpt.SYNTHETIC_KIND:
                 text = render_synthetic(fixture)
             else:

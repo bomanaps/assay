@@ -1,0 +1,189 @@
+use core::MemBuffer
+use ingot::fixture_support::load_packed
+use ingot::fixtures::frame_gloas as f
+use ingot::{
+    execution_state_root,
+    verify_account,
+    verify_gloas_latest_block_hash,
+    verify_storage,
+    AccountState,
+    BeaconBlockHeader,
+    BeaconRoot,
+    Branch,
+    NodeList,
+    ProofError,
+    Proven,
+    StateRoot,
+}
+
+fn devnet_header() -> BeaconBlockHeader {
+    BeaconBlockHeader {
+        slot: f::SLOT,
+        proposer_index: f::PROPOSER_INDEX,
+        parent_root: f::PARENT_ROOT,
+        state_root: f::HEADER_STATE_ROOT,
+        body_root: f::BODY_ROOT,
+    }
+}
+
+fn execution_header() -> MemBuffer {
+    load_packed(f::EXECUTION_HEADER_WORDS, len: f::EXECUTION_HEADER_LEN)
+}
+
+fn account_nodes() -> NodeList {
+    NodeList::from_fixture(
+        f::ACCOUNT_BYTES,
+        f::ACCOUNT_OFFSETS,
+        first: 0,
+        count: f::ACCOUNT_NODE_COUNT,
+    )
+}
+
+fn slot_nodes(_ index: usize) -> NodeList {
+    NodeList::from_fixture(
+        f::SLOT_BYTES,
+        f::SLOT_OFFSETS,
+        first: f::SLOT_NODE_STARTS[index],
+        count: f::SLOT_NODE_STARTS[index + 1] - f::SLOT_NODE_STARTS[index],
+    )
+}
+
+fn storage_root() -> AccountState {
+    let proven = match verify_account(
+        state_root: StateRoot::new(f::EXECUTION_STATE_ROOT),
+        f::ADDRESS_BYTES,
+        nodes: account_nodes(),
+    ) {
+        Result::Ok(proven) => proven,
+        Result::Err(_) => {
+            core::assert(false)
+            Proven::Absent
+        },
+    }
+    match proven {
+        Proven::Present(account) => account,
+        Proven::Absent => {
+            core::assert(false)
+            AccountState::missing()
+        },
+    }
+}
+
+#[test]
+fn the_devnet_header_fields_hash_to_the_captured_block_root() {
+    core::assert(devnet_header().root().value() == f::BLOCK_ROOT)
+}
+
+#[test]
+fn the_gloas_state_proves_its_latest_block_hash() {
+    match verify_gloas_latest_block_hash(
+        beacon_root: BeaconRoot::new(f::BLOCK_ROOT),
+        block_hash: f::LATEST_BLOCK_HASH,
+        branch: Branch::new(f::LATEST_BLOCK_HASH_BRANCH),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn every_flipped_branch_word_is_refused() {
+    var at: usize = 0
+    while at < 14 {
+        var branch = f::LATEST_BLOCK_HASH_BRANCH
+        branch[at] ^= 1
+        match verify_gloas_latest_block_hash(
+            beacon_root: BeaconRoot::new(f::BLOCK_ROOT),
+            block_hash: f::LATEST_BLOCK_HASH,
+            branch: Branch::new(branch),
+        ) {
+            Result::Ok(()) => core::assert(false),
+            Result::Err(error) => core::assert(error == ProofError::RootMismatch),
+        }
+        at += 1
+    }
+}
+
+#[test]
+fn a_reused_branch_under_a_flipped_leaf_is_refused() {
+    match verify_gloas_latest_block_hash(
+        beacon_root: BeaconRoot::new(f::BLOCK_ROOT),
+        block_hash: f::LATEST_BLOCK_HASH ^ 1,
+        branch: Branch::new(f::LATEST_BLOCK_HASH_BRANCH),
+    ) {
+        Result::Ok(()) => core::assert(false),
+        Result::Err(error) => core::assert(error == ProofError::RootMismatch),
+    }
+}
+
+#[test]
+fn the_execution_header_yields_its_state_root() {
+    match execution_state_root(
+        execution_header().span(),
+        block_hash: f::LATEST_BLOCK_HASH,
+    ) {
+        Result::Ok(root) => core::assert(root == StateRoot::new(f::EXECUTION_STATE_ROOT)),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn a_corrupted_execution_header_is_refused() {
+    var header = execution_header()
+    let first = header.span().read_word(0)
+    header.write_word(offset: 0, value: first ^ 1)
+    match execution_state_root(header.span(), block_hash: f::LATEST_BLOCK_HASH) {
+        Result::Ok(_) => core::assert(false),
+        Result::Err(error) => core::assert(error == ProofError::RootMismatch),
+    }
+}
+
+#[test]
+fn an_execution_header_against_the_wrong_hash_is_refused() {
+    match execution_state_root(
+        execution_header().span(),
+        block_hash: f::LATEST_BLOCK_HASH ^ 1,
+    ) {
+        Result::Ok(_) => core::assert(false),
+        Result::Err(error) => core::assert(error == ProofError::RootMismatch),
+    }
+}
+
+#[test]
+fn the_ring_buffer_timestamp_slot_holds_the_block_timestamp() {
+    let account = storage_root()
+    match verify_storage(
+        storage_root: account.storage_root,
+        slot: f::TIMESTAMP_SLOT,
+        nodes: slot_nodes(0),
+    ) {
+        Result::Ok(value) => core::assert(value == f::BLOCK_TIMESTAMP as u256),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn the_ring_buffer_root_slot_holds_the_parent_beacon_root() {
+    let account = storage_root()
+    match verify_storage(
+        storage_root: account.storage_root,
+        slot: f::ROOT_SLOT,
+        nodes: slot_nodes(1),
+    ) {
+        Result::Ok(value) => core::assert(value == f::PARENT_BEACON_ROOT),
+        Result::Err(_) => core::assert(false),
+    }
+}
+
+#[test]
+fn swapped_storage_proofs_are_refused() {
+    let account = storage_root()
+    match verify_storage(
+        storage_root: account.storage_root,
+        slot: f::TIMESTAMP_SLOT,
+        nodes: slot_nodes(1),
+    ) {
+        Result::Ok(value) => core::assert(value != f::BLOCK_TIMESTAMP as u256),
+        Result::Err(_) => {},
+    }
+}

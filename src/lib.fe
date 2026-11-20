@@ -29,6 +29,8 @@ pub use consumer::{
     ValidatorRecord,
     FULU_FIRST_SLOT,
 }
+pub use beacon::{verify_gloas_latest_block_hash, GLOAS_LATEST_BLOCK_HASH}
+pub use frame::{execution_state_root, AccountMissing, BelowFloor, FrameGate, FrameGateMsg}
 pub use example::{
     GateMsg,
     NotEligible,
