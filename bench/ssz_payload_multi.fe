@@ -602,6 +602,48 @@ static_assert(validator_gindex(0, ValidatorField::WithdrawalCredentials).value()
 static_assert(validator_gindex(2345678, ValidatorField::EffectiveBalance).value()
     == 12578413040522866)
 
+pub const GLOAS_STATE_FIELDS: u256 = 46
+pub const GLOAS_LATEST_BLOCK_HASH_FIELD: u256 = 24
+
+pub const fn progressive_field(_ fields: u256, _ index: u256) -> u256 {
+    if index >= fields {
+        core::panic_code(PANIC_ASSERT)
+    }
+    var depth: u256 = 0
+    var gindex: u256 = 2
+    var remaining = index
+    while remaining >= (1 << depth) {
+        remaining -= 1 << depth
+        depth += 2
+        gindex = gindex * 2 + 1
+    }
+    ((gindex << 1) << depth) + remaining
+}
+
+pub const GLOAS_LATEST_BLOCK_HASH: u256 = concat(
+    HEADER_STATE_ROOT,
+    progressive_field(GLOAS_STATE_FIELDS, GLOAS_LATEST_BLOCK_HASH_FIELD),
+)
+
+static_assert(progressive_field(46, 0) == 4)
+static_assert(progressive_field(46, 1) == 40)
+static_assert(progressive_field(46, 24) == 2947)
+static_assert(progressive_field(46, 45) == 2968)
+static_assert(GLOAS_LATEST_BLOCK_HASH == 23427)
+
+pub fn verify_gloas_latest_block_hash<P: ProofNodes>(
+    beacon_root: BeaconRoot,
+    block_hash: u256,
+    branch: P,
+) -> Result<ProofError, ()> {
+    verify_branch(
+        root: beacon_root.as_root(),
+        leaf: block_hash,
+        gindex: GIndex::new(GLOAS_LATEST_BLOCK_HASH),
+        branch,
+    )
+}
+
 pub struct BeaconBlockHeader {
     pub slot: u64,
     pub proposer_index: u64,
