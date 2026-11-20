@@ -60,6 +60,8 @@ HEADER_FIELDS = [
     ("excessBlobGas", "quantity"),
     ("parentBeaconBlockRoot", "hash"),
     ("requestsHash", "hash"),
+    ("blockAccessListHash", "hash"),
+    ("slotNumber", "quantity"),
 ]
 
 

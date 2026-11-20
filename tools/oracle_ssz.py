@@ -78,6 +78,34 @@ VALIDATOR_EPOCHS = ("activation_eligibility_epoch", "activation_epoch", "exit_ep
 LIST_LENGTH_SIBLING = 3 + VALIDATOR_REGISTRY_DEPTH
 
 BEACON_KINDS = ("beacon_chain", "beacon_validator", "beacon_history", "beacon_deephistory")
+FRAME_KIND = "frame_gloas"
+GLOAS_STATE_FIELDS = 46
+GLOAS_LATEST_BLOCK_HASH_FIELD = 24
+EXECUTION_STATE_ROOT_FIELD = 3
+EXECUTION_NUMBER_FIELD = 8
+EXECUTION_TIMESTAMP_FIELD = 11
+HISTORY_BUFFER_LENGTH = 8191
+BEACON_ROOTS_ADDRESS = "0x000f3df6d732807ef1319fb7b8bb8522d0beac02"
+FRAME_KEYS = {
+    "name",
+    "kind",
+    "network",
+    "chainId",
+    "specCommit",
+    "fork",
+    "endpoints",
+    "beaconRoot",
+    "beaconHeader",
+    "latestBlockHashGindex",
+    "latestBlockHash",
+    "latestBlockHashBranch",
+    "executionHeaderRlp",
+    "executionHeader",
+    "account",
+    "timestampSlot",
+    "rootSlot",
+    "proof",
+}
 FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 CONSENSUS_VERSION = "fulu"
 HEADER_KEYS = {"slot", "proposer_index", "parent_root", "state_root", "body_root"}
@@ -607,6 +635,125 @@ def analyze_deephistory(fixture, fixtures_dir):
         "summary_root": summary_root,
         "historical_root": stored,
         "proofs": {**proofs, **vector_proofs},
+    }
+
+
+def progressive_field_gindex(fields, index):
+    if not 0 <= index < fields:
+        raise CheckError(f"field index {index} outside a {fields} field progressive container")
+    depth, gindex = 0, 2
+    while index >= 1 << depth:
+        index -= 1 << depth
+        depth += 2
+        gindex = gindex * 2 + 1
+    return ((gindex << 1) << depth) + index
+
+
+def analyze_frame(fixture):
+    expect_keys(fixture, FRAME_KEYS, "fixture")
+    header = parse_header(fixture["beaconHeader"])
+    root = word(fixture["beaconRoot"])
+    if header_root(header) != root:
+        raise CheckError("beacon header fields do not hash to the block root")
+
+    gindex = decimal(fixture["latestBlockHashGindex"], "latestBlockHashGindex")
+    expected = concat(
+        field_gindex(HEADER_FIELDS, HEADER_STATE_ROOT),
+        progressive_field_gindex(GLOAS_STATE_FIELDS, GLOAS_LATEST_BLOCK_HASH_FIELD),
+    )
+    if gindex != expected:
+        raise CheckError(f"gindex {gindex} differs from the derived {expected}")
+    leaf = word(fixture["latestBlockHash"])
+    branch = [word(node) for node in fixture["latestBlockHashBranch"]]
+    if walk(leaf, gindex, branch) != root:
+        raise CheckError("the latest_block_hash branch does not reconstruct the block root")
+
+    try:
+        header_rlp = oracle_mpt.hex_bytes(fixture["executionHeaderRlp"])
+        if oracle_mpt.keccak256(header_rlp) != leaf:
+            raise CheckError("execution header RLP does not hash to latest_block_hash")
+        items = oracle_mpt.rlp_decode(header_rlp)
+        if not isinstance(items, list) or len(items) <= EXECUTION_TIMESTAMP_FIELD:
+            raise CheckError("execution header RLP is not a long enough list")
+        state_root = items[EXECUTION_STATE_ROOT_FIELD]
+        if not isinstance(state_root, bytes) or len(state_root) != 32:
+            raise CheckError("execution state root field is not 32 bytes")
+        recorded = fixture["executionHeader"]
+        expect_keys(
+            recorded,
+            {"number", "timestamp", "stateRoot", "parentBeaconBlockRoot"},
+            "executionHeader",
+        )
+        if state_root != word(recorded["stateRoot"]):
+            raise CheckError("recorded stateRoot differs from the RLP field")
+        number = oracle_mpt.rlp_int(items[EXECUTION_NUMBER_FIELD])
+        if number != oracle_mpt.to_int(recorded["number"]):
+            raise CheckError("recorded number differs from the RLP field")
+        timestamp = oracle_mpt.rlp_int(items[EXECUTION_TIMESTAMP_FIELD])
+        if timestamp != oracle_mpt.to_int(recorded["timestamp"]):
+            raise CheckError("recorded timestamp differs from the RLP field")
+
+        proof = fixture["proof"]
+        if fixture["account"] != BEACON_ROOTS_ADDRESS or proof["address"] != BEACON_ROOTS_ADDRESS:
+            raise CheckError("the proven account is not the EIP-4788 contract")
+        address = oracle_mpt.hex_bytes(proof["address"], 20)
+        account_nodes = [oracle_mpt.hex_bytes(node) for node in proof["accountProof"]]
+        account_leaf = oracle_mpt.walk(state_root, oracle_mpt.keccak256(address), account_nodes)
+        if account_leaf is None:
+            raise CheckError("the 4788 account is absent from the proof")
+        account_fields = oracle_mpt.rlp_decode(account_leaf)
+        if not isinstance(account_fields, list) or len(account_fields) != 4:
+            raise CheckError("account leaf is not a 4 item list")
+        storage_root = account_fields[2]
+
+        timestamp_slot = oracle_mpt.to_int(fixture["timestampSlot"])
+        root_slot = oracle_mpt.to_int(fixture["rootSlot"])
+        if timestamp_slot != timestamp % HISTORY_BUFFER_LENGTH:
+            raise CheckError("timestampSlot is not timestamp mod the ring length")
+        if root_slot != timestamp_slot + HISTORY_BUFFER_LENGTH:
+            raise CheckError("rootSlot is not the matching root index")
+
+        slots = {}
+        for entry in proof["storageProof"]:
+            key = oracle_mpt.to_int(entry["key"])
+            nodes = [oracle_mpt.hex_bytes(node) for node in entry["proof"]]
+            value_rlp = oracle_mpt.walk(
+                storage_root, oracle_mpt.keccak256(key.to_bytes(32, "big")), nodes
+            )
+            if value_rlp is None:
+                raise CheckError(f"storage slot {key} is absent from the proof")
+            slots[key] = {
+                "value": oracle_mpt.rlp_int(oracle_mpt.rlp_decode(value_rlp)),
+                "nodes": nodes,
+            }
+        if set(slots) != {timestamp_slot, root_slot}:
+            raise CheckError("storage proofs do not cover the two ring buffer slots")
+        if slots[timestamp_slot]["value"] != timestamp:
+            raise CheckError("the ring buffer timestamp slot does not hold the block timestamp")
+        parent_beacon_root = oracle_mpt.to_int(recorded["parentBeaconBlockRoot"])
+        if slots[root_slot]["value"] != parent_beacon_root:
+            raise CheckError("the ring buffer root slot does not hold the parent beacon root")
+    except oracle_mpt.ProofError as e:
+        raise CheckError(str(e)) from None
+
+    return {
+        "kind": FRAME_KIND,
+        "header": header,
+        "root": root,
+        "gindex": gindex,
+        "leaf": leaf,
+        "branch": branch,
+        "header_rlp": header_rlp,
+        "state_root": state_root,
+        "number": number,
+        "timestamp": timestamp,
+        "address": address,
+        "account_nodes": account_nodes,
+        "timestamp_slot": timestamp_slot,
+        "root_slot": root_slot,
+        "timestamp_nodes": slots[timestamp_slot]["nodes"],
+        "root_nodes": slots[root_slot]["nodes"],
+        "parent_beacon_root": parent_beacon_root,
     }
 
 

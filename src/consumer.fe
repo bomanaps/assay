@@ -260,14 +260,14 @@ pub fn proof_error_code(_ error: ProofError) -> u8 {
     }
 }
 
-fn checked<T>(_ result: own Result<ProofError, T>) -> T {
+pub(ingot) fn checked<T>(_ result: own Result<ProofError, T>) -> T {
     match result {
         Result::Ok(value) => value,
         Result::Err(error) => revert_error(InvalidProof { code: proof_error_code(error) }),
     }
 }
 
-fn address_bytes(_ address: Address) -> [u8; ADDRESS_BYTES] {
+pub(ingot) fn address_bytes(_ address: Address) -> [u8; ADDRESS_BYTES] {
     let word = address.word()
     var bytes: [u8; ADDRESS_BYTES] = [0; ADDRESS_BYTES]
     var i: usize = 0
@@ -278,7 +278,7 @@ fn address_bytes(_ address: Address) -> [u8; ADDRESS_BYTES] {
     bytes
 }
 
-fn beacon_root(_ beacon_roots: Address, timestamp: u64) -> BeaconRoot
+pub(ingot) fn beacon_root(_ beacon_roots: Address, timestamp: u64) -> BeaconRoot
 uses (call: Call, ctx: Ctx)
 {
     var args = MemBuffer::new(32)
