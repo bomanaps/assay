@@ -3,6 +3,7 @@ const DOCUMENTS = [
   { file: "gas.md", title: "Gas benchmarks" },
   { file: "consuming.md", title: "Use Assay in your contract" },
   { file: "pq.md", title: "Post-quantum Ethereum" },
+  { file: "vectors.md", title: "Attack vector suite" },
   { file: "live_log.md", title: "Live verification log" },
   { file: "audit.md", title: "Audit and findings" },
   { file: "../README.md", title: "README" }

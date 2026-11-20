@@ -237,6 +237,11 @@ def generate():
 def check():
     files = expected_files()
     problems = 0
+    readme = ROOT / "vectors" / "README.md"
+    site_copy = ROOT / "docs" / "vectors.md"
+    if not site_copy.exists() or site_copy.read_text() != readme.read_text():
+        print("stale docs/vectors.md; copy vectors/README.md over it")
+        problems += 1
     for path, text in files.items():
         if not path.exists():
             print(f"missing {path.relative_to(ROOT)}")
