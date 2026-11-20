@@ -385,6 +385,59 @@ def render_receipt(fixture):
     return "".join(parts)
 
 
+PQ_PROOF_NAMES = {
+    "pubkey": "PUBKEY",
+    "vrf_root": "VRF_ROOT",
+    "record": "RECORD",
+    "genesis_validators_root": "GENESIS",
+}
+
+
+def render_pq(fixture):
+    root = bytes.fromhex(fixture["stateRoot"][2:])
+    index = int(fixture["validatorIndex"])
+    validator = fixture["validator"]
+    parts = [
+        const("STATE_ROOT", "u256", int(fixture["stateRoot"], 16)),
+        const("VALIDATOR_INDEX", "u64", index),
+        const("PUBKEY", "u256", int(validator["pubkey"], 16)),
+        const("VRF_ROOT", "u256", int(validator["vrf_root"], 16)),
+        const("RECORD_EFFECTIVE_BALANCE", "u64", int(validator["effective_balance"])),
+        const("RECORD_WITHDRAWAL_CREDENTIALS", "u256", int(validator["withdrawal_credentials"], 16)),
+        const("RECORD_SLASHED", "bool", "true" if validator["slashed"] else "false"),
+        const("RECORD_ACTIVATION_ELIGIBILITY_EPOCH", "u64", int(validator["activation_eligibility_epoch"])),
+        const("RECORD_ACTIVATION_EPOCH", "u64", int(validator["activation_epoch"])),
+        const("RECORD_EXIT_EPOCH", "u64", int(validator["exit_epoch"])),
+        const("RECORD_WITHDRAWABLE_EPOCH", "u64", int(validator["withdrawable_epoch"])),
+    ]
+    expected_fields = {
+        f"validators[{index}].pubkey": "pubkey",
+        f"validators[{index}].vrf_root": "vrf_root",
+        f"validators[{index}]": "record",
+        "genesis_validators_root": "genesis_validators_root",
+    }
+    seen = set()
+    for proof in fixture["proofs"]:
+        field = proof["field"]
+        if field not in expected_fields:
+            raise ValueError(f"unexpected pq proof {field}")
+        short = expected_fields[field]
+        seen.add(short)
+        leaf = bytes.fromhex(proof["leaf"][2:])
+        branch = [bytes.fromhex(n[2:]) for n in proof["branch"]]
+        if oracle_ssz.walk(leaf, int(proof["gindex"]), branch) != root:
+            raise ValueError(f"pq proof {field} does not reconstruct the state root")
+        prefix = PQ_PROOF_NAMES[short]
+        parts += [
+            const(f"{prefix}_GINDEX", "u256", int(proof["gindex"])),
+            const(f"{prefix}_LEAF", "u256", int(proof["leaf"], 16)),
+            word_array(f"{prefix}_BRANCH", branch),
+        ]
+    if seen != set(PQ_PROOF_NAMES):
+        raise ValueError(f"pq fixture is missing proofs: {sorted(set(PQ_PROOF_NAMES) - seen)}")
+    return "".join(parts)
+
+
 def expected_files():
     files = {}
     names = []
@@ -403,6 +456,8 @@ def expected_files():
                 text = render_beacon(fixture)
             elif kind == "receipt":
                 text = render_receipt(fixture)
+            elif kind == "pq_state":
+                text = render_pq(fixture)
             elif kind == oracle_mpt.SYNTHETIC_KIND:
                 text = render_synthetic(fixture)
             else:

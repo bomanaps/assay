@@ -12,6 +12,7 @@ pub use mainnet_account_eoa::{self}
 pub use mainnet_storage_absent::{self}
 pub use mainnet_storage_usdc::{self}
 pub use mainnet_storage_weth::{self}
+pub use pq_state::{self}
 pub use synthetic_tries::{self}
 pub use validator_beacon::{self}
 pub use validator_slashed::{self}
