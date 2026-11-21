@@ -1,0 +1,197 @@
+use core::{MemBuffer, MemSpan}
+use ingot::fixture_support::load_packed
+use ingot::fixtures::xmss_vectors as v
+use ingot::{hash_pair, verify_branch, verify_xmss, Branch, GIndex, PqValidator, ProofError, Root}
+use std::evm::ssz::u64_chunk
+
+const ACCEPTED: usize = 1
+const REFUSED: usize = 0
+const REJECTED: usize = 2
+
+fn outcome(public_key: MemSpan, message: MemSpan, signature: MemSpan) -> usize {
+    match verify_xmss(public_key, message, signature) {
+        Result::Ok(true) => ACCEPTED,
+        Result::Ok(false) => REFUSED,
+        Result::Err(error) => {
+            core::assert(error == ProofError::WrongLength)
+            REJECTED
+        },
+    }
+}
+
+#[test]
+fn every_ethlib_verification_vector_agrees() {
+    let keys: MemBuffer = load_packed(v::KEY_BYTES_WORDS, len: v::KEY_BYTES_LEN)
+    let messages: MemBuffer = load_packed(v::MESSAGE_BYTES_WORDS, len: v::MESSAGE_BYTES_LEN)
+    let signatures: MemBuffer = load_packed(v::SIGNATURE_BYTES_WORDS, len: v::SIGNATURE_BYTES_LEN)
+    var case: usize = 0
+    var accepted: usize = 0
+    while case < v::CASE_COUNT {
+        let got = outcome(
+            public_key: keys.span()
+                .slice(
+                    offset: v::KEY_OFFSETS[case],
+                    len: v::KEY_OFFSETS[case + 1] - v::KEY_OFFSETS[case],
+                ),
+            message: messages
+                .span()
+                .slice(
+                    offset: v::MESSAGE_OFFSETS[case],
+                    len: v::MESSAGE_OFFSETS[case + 1] - v::MESSAGE_OFFSETS[case],
+                ),
+            signature: signatures
+                .span()
+                .slice(
+                    offset: v::SIGNATURE_OFFSETS[case],
+                    len: v::SIGNATURE_OFFSETS[case + 1] - v::SIGNATURE_OFFSETS[case],
+                ),
+        )
+        core::assert(got == v::EXPECTED[case])
+        if got == ACCEPTED {
+            accepted += 1
+        }
+        case += 1
+    }
+    core::assert(accepted == 4)
+}
+
+#[test]
+fn a_flipped_bit_in_any_region_is_refused() {
+    let keys: MemBuffer = load_packed(v::KEY_BYTES_WORDS, len: v::KEY_BYTES_LEN)
+    let messages: MemBuffer = load_packed(v::MESSAGE_BYTES_WORDS, len: v::MESSAGE_BYTES_LEN)
+    let signatures: MemBuffer = load_packed(v::SIGNATURE_BYTES_WORDS, len: v::SIGNATURE_BYTES_LEN)
+    let spots: [usize; 4] = [4, 32, 1204, 2388]
+    var case: usize = 0
+    while case < v::CASE_COUNT {
+        if v::EXPECTED[case] == ACCEPTED {
+            let source = signatures
+                .span()
+                .slice(
+                    offset: v::SIGNATURE_OFFSETS[case],
+                    len: v::SIGNATURE_OFFSETS[case + 1] - v::SIGNATURE_OFFSETS[case],
+                )
+            var spot: usize = 0
+            while spot < 4 {
+                var copy = MemBuffer::new(source.len() + 32)
+                var at: usize = 0
+                while at + 32 <= source.len() {
+                    copy.write_word(offset: at, value: source.read_word(at))
+                    at += 32
+                }
+                var tail: u256 = 0
+                var extra: usize = 0
+                while at + extra < source.len() {
+                    tail |= (source.byte_at(at + extra) as u256) << ((248 - 8 * extra) as u256)
+                    extra += 1
+                }
+                copy.write_word(offset: at, value: tail)
+                let word = copy.span().read_word(spots[spot])
+                copy.write_word(offset: spots[spot], value: word ^ (1 << 128))
+                copy.truncate(source.len())
+                core::assert(
+                    outcome(
+                            public_key: keys.span()
+                                .slice(
+                                    offset: v::KEY_OFFSETS[case],
+                                    len: v::KEY_OFFSETS[case + 1] - v::KEY_OFFSETS[case],
+                                ),
+                            message: messages
+                                .span()
+                                .slice(
+                                    offset: v::MESSAGE_OFFSETS[case],
+                                    len: v::MESSAGE_OFFSETS[case + 1] - v::MESSAGE_OFFSETS[case],
+                                ),
+                            signature: copy.span(),
+                        )
+                        == REFUSED,
+                )
+                spot += 1
+            }
+        }
+        case += 1
+    }
+}
+
+#[test]
+fn a_verified_signer_key_is_provable_inside_a_validator_record() {
+    let keys: MemBuffer = load_packed(v::KEY_BYTES_WORDS, len: v::KEY_BYTES_LEN)
+    let messages: MemBuffer = load_packed(v::MESSAGE_BYTES_WORDS, len: v::MESSAGE_BYTES_LEN)
+    let signatures: MemBuffer = load_packed(v::SIGNATURE_BYTES_WORDS, len: v::SIGNATURE_BYTES_LEN)
+    var case: usize = 0
+    while v::EXPECTED[case] != ACCEPTED {
+        case += 1
+    }
+    let key_word = keys
+        .span()
+        .slice(
+            offset: v::KEY_OFFSETS[case],
+            len: v::KEY_OFFSETS[case + 1] - v::KEY_OFFSETS[case],
+        )
+        .read_word(0)
+    core::assert(
+        outcome(
+                public_key: keys.span()
+                    .slice(
+                        offset: v::KEY_OFFSETS[case],
+                        len: v::KEY_OFFSETS[case + 1] - v::KEY_OFFSETS[case],
+                    ),
+                message: messages
+                    .span()
+                    .slice(
+                        offset: v::MESSAGE_OFFSETS[case],
+                        len: v::MESSAGE_OFFSETS[case + 1] - v::MESSAGE_OFFSETS[case],
+                    ),
+                signature: signatures
+                    .span()
+                    .slice(
+                        offset: v::SIGNATURE_OFFSETS[case],
+                        len: v::SIGNATURE_OFFSETS[case + 1] - v::SIGNATURE_OFFSETS[case],
+                    ),
+            )
+            == ACCEPTED,
+    )
+
+    let record = PqValidator {
+        pubkey: key_word,
+        vrf_root: 0x1111111111111111111111111111111111111111111111111111111111111111,
+        withdrawal_credentials: 0x2222222222222222222222222222222222222222222222222222222222222222,
+        effective_balance: 32000000000,
+        slashed: false,
+        activation_eligibility_epoch: 1,
+        activation_epoch: 2,
+        exit_epoch: 3,
+        withdrawable_epoch: 4,
+    }
+    let root = record.root()
+    let right_half = hash_pair(
+        hash_pair(
+            hash_pair(u64_chunk(record.withdrawable_epoch), 0),
+            hash_pair(0, 0),
+        ),
+        hash_pair(hash_pair(0, 0), hash_pair(0, 0)),
+    )
+    let branch = [
+        record.vrf_root,
+        hash_pair(
+            record.withdrawal_credentials,
+            u64_chunk(record.effective_balance),
+        ),
+        hash_pair(
+            hash_pair(0, u64_chunk(record.activation_eligibility_epoch)),
+            hash_pair(
+                u64_chunk(record.activation_epoch),
+                u64_chunk(record.exit_epoch),
+            ),
+        ),
+        right_half,
+    ]
+    match verify_branch(
+        root: Root::new(root),
+        leaf: key_word,
+        gindex: GIndex::new(16),
+        branch: Branch::new(branch),
+    ) {
+        Result::Ok(()) => {},
+        Result::Err(_) => core::assert(false),
+    }
+}

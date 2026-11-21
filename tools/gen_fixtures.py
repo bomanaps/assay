@@ -473,6 +473,42 @@ def render_pq(fixture):
     return "".join(parts)
 
 
+def render_xmss_vectors():
+    import oracle_xmss
+
+    cases = sorted(d for d in oracle_xmss.VECTORS.iterdir() if d.is_dir())
+    if not cases:
+        raise SystemExit("error: no vendored vectors under fixtures/xmss")
+    keys, messages, signatures = bytearray(), bytearray(), bytearray()
+    key_offsets, message_offsets, signature_offsets = [0], [0], [0]
+    expected = []
+    for case in cases:
+        values = oracle_xmss.parse_vector(case / "data.yaml")
+        outcome = oracle_xmss.verify(
+            values["public_key"], values["message"], values["signature"]
+        )
+        if outcome != values["output"]:
+            raise SystemExit(f"error: {case.name}: oracle disagrees with the vendored vector")
+        keys.extend(values["public_key"])
+        messages.extend(values["message"])
+        signatures.extend(values["signature"])
+        key_offsets.append(len(keys))
+        message_offsets.append(len(messages))
+        signature_offsets.append(len(signatures))
+        expected.append(2 if outcome is None else int(outcome))
+    parts = [
+        const("CASE_COUNT", "usize", len(cases)),
+        usize_array("EXPECTED", expected),
+        usize_array("KEY_OFFSETS", key_offsets),
+        packed_bytes("KEY_BYTES", bytes(keys)),
+        usize_array("MESSAGE_OFFSETS", message_offsets),
+        packed_bytes("MESSAGE_BYTES", bytes(messages)),
+        usize_array("SIGNATURE_OFFSETS", signature_offsets),
+        packed_bytes("SIGNATURE_BYTES", bytes(signatures)),
+    ]
+    return "".join(parts)
+
+
 def expected_files():
     files = {}
     names = []
@@ -505,6 +541,8 @@ def expected_files():
         names.append(name)
     files[OUT_DIR / "spec_vectors.fe"] = render_spec_vectors()
     names.append("spec_vectors")
+    files[OUT_DIR / "xmss_vectors.fe"] = render_xmss_vectors()
+    names.append("xmss_vectors")
     files[INDEX] = "".join(f"pub use {name}::{{self}}\n" for name in names)
     return files
 

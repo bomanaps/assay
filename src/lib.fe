@@ -31,6 +31,7 @@ pub use consumer::{
 }
 pub use beacon::{verify_gloas_latest_block_hash, GLOAS_LATEST_BLOCK_HASH}
 pub use frame::{execution_state_root, AccountMissing, BelowFloor, FrameGate, FrameGateMsg}
+pub use xmss::verify_xmss
 pub use example::{
     GateMsg,
     NotEligible,
