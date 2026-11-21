@@ -44,8 +44,11 @@ jobs:
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
         with:
           workspaces: ${{ runner.temp }}/fe-src
+      - name: Install the tree-sitter CLI the compiler's parser build needs
+        run: npm ci
+        working-directory: ${{ runner.temp }}/fe-src/crates/tree-sitter-fe
       - name: Build the pinned compiler from source
-        run: cargo build --release --features wasm -p fe
+        run: PATH="$RUNNER_TEMP/fe-src/crates/tree-sitter-fe/node_modules/.bin:$PATH" cargo build --release --features wasm -p fe
         working-directory: ${{ runner.temp }}/fe-src
       - name: Rebuild the browser module and compare it with the committed bytes
         run: |
