@@ -3,7 +3,7 @@
 Assay is a library before it is an app. Everything the CLI and the deployed
 contract do comes from public functions you can import into your own ingot,
 and the deployed BeaconProver at
-`0xcB5cAc58273dE7b106E0a2a1387d4F42868E6e7b` on mainnet is callable from any
+`0xDd356690270534B0DCe6755d77bCA554c9c54603` on mainnet is callable from any
 contract today. Every step on this page was built and run before it was
 written down.
 

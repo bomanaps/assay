@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run Assay</title>
+<meta name="description" content="One click, and Ethereum itself re-verifies a proof through the live BeaconProver contract at that moment.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="run.css">
+</head>
+<body class="run-body">
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><b>Assay</b></a>
+    <nav class="links">
+      <a href="index.html#live">Live</a>
+      <a href="run.html" aria-current="page">Run</a>
+      <a href="index.html#gas">Gas</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/bomanaps/assay">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap run-main">
+  <section class="run-hero">
+    <h1>Press a button.<br>Ethereum verifies the proof.</h1>
+    <p class="run-sub">
+      Every card below sends a real <span class="mono">eth_call</span> from your browser to the
+      <a id="contract-link" href="#" class="mono"></a> contract on mainnet. At the moment you press
+      the button, the EVM walks every hash from the live EIP-4788 beacon root down to the fact.
+      The verification is never prerecorded. A stale proof would simply fail.
+    </p>
+    <div class="freshline">
+      <span class="pulse" aria-hidden="true"></span>
+      <span id="freshness">loading the latest capture…</span>
+    </div>
+  </section>
+
+  <section class="stage" aria-label="Run a live proof">
+    <div class="root-prism" aria-hidden="true">
+      <div class="prism-tilt">
+      <div class="prism-spin">
+        <div class="face f1"></div>
+        <div class="face f2"></div>
+        <div class="face f3"></div>
+        <div class="face f4"></div>
+        <div class="face cap top"></div>
+        <div class="face cap bottom"></div>
+      </div>
+      </div>
+      <div class="prism-caption">the 32-byte anchor</div>
+    </div>
+
+    <div id="cards" class="cards"></div>
+  </section>
+
+  <section class="rail-home">
+    <div id="rail" class="rail" hidden>
+      <div class="rail-title"><span id="rail-name"></span></div>
+      <ol class="rail-steps">
+        <li data-step="build"><span class="dot"></span>proof arguments loaded<span class="note" id="note-build"></span></li>
+        <li data-step="send"><span class="dot"></span>eth_call sent to mainnet<span class="note" id="note-send"></span></li>
+        <li data-step="verify"><span class="dot"></span>the EVM re-verifies every hash<span class="note" id="note-verify"></span></li>
+        <li data-step="answer"><span class="dot"></span>answer returned<span class="note" id="note-answer"></span></li>
+      </ol>
+      <div id="result" class="result" hidden>
+        <div class="result-head">proven on Ethereum</div>
+        <dl id="result-rows"></dl>
+        <div class="result-meta">
+          <span id="gas-badge"></span>
+          <button id="raw-toggle" type="button">inspect the raw call</button>
+        </div>
+        <pre id="raw-call" class="raw" hidden></pre>
+      </div>
+      <div id="failure" class="failure" hidden></div>
+    </div>
+  </section>
+
+  <section class="why-cards">
+    <p>
+      Storage and transactions you can prove yourself below, because a browser can fetch those
+      witnesses freely. Validator and history proofs need branches from inside the full beacon
+      state, a 300 MB download no free endpoint serves a browser. Our pipeline rebuilds those
+      server side on schedule, publishes the arguments, and your click still makes Ethereum do
+      the verifying.
+    </p>
+  </section>
+
+  <section class="yours" id="yours">
+    <h2>Prove your own fact</h2>
+    <p class="run-sub">
+      Type any mainnet address and storage slot. Your browser fetches the newest beacon block,
+      computes the proof branch itself, refuses its own work unless it reproduces the chain's
+      published block root, fetches the storage proof, and asks Ethereum to verify the lot.
+      Nothing here trusts this site: every hash is checked by your machine or by the contract.
+    </p>
+    <form id="yours-form" class="yours-form">
+      <label>address
+        <input id="y-address" class="mono" spellcheck="false" placeholder="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" required pattern="0x[0-9a-fA-F]{40}">
+      </label>
+      <label>storage slot
+        <input id="y-slot" class="mono" spellcheck="false" value="0" required pattern="(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})">
+      </label>
+      <button class="runbtn" type="submit">Prove it on Ethereum</button>
+    </form>
+    <ol class="rail-steps yours-steps" id="y-steps" hidden>
+      <li data-ystep="anchor"><span class="dot"></span>fresh beacon anchor built in your browser<span class="note" id="ynote-anchor"></span></li>
+      <li data-ystep="selfcheck"><span class="dot"></span>your browser's math equals the chain's root<span class="note" id="ynote-selfcheck"></span></li>
+      <li data-ystep="proof"><span class="dot"></span>storage proof fetched<span class="note" id="ynote-proof"></span></li>
+      <li data-ystep="call"><span class="dot"></span>Ethereum verifies it<span class="note" id="ynote-call"></span></li>
+    </ol>
+    <div id="y-result" class="result" hidden>
+      <div class="result-head">proven on Ethereum</div>
+      <dl id="y-rows"></dl>
+    </div>
+    <div id="y-failure" class="failure" hidden></div>
+
+    <h2 class="tx-head">Prove your own transaction</h2>
+    <p class="run-sub">
+      Paste any mainnet transaction hash from the last day. Your browser rebuilds the whole
+      block's receipt trie itself, refuses its own work unless the root equals the one in the
+      block header, and Ethereum verifies the receipt from the beacon root.
+    </p>
+    <form id="tx-form" class="yours-form">
+      <label>transaction hash
+        <input id="t-hash" class="mono" spellcheck="false" placeholder="0x…" required pattern="0x[0-9a-fA-F]{64}">
+      </label>
+      <button class="runbtn" type="submit">Prove the outcome</button>
+    </form>
+    <ol class="rail-steps yours-steps" id="t-steps" hidden>
+      <li data-tstep="find"><span class="dot"></span>transaction located<span class="note" id="tnote-find"></span></li>
+      <li data-tstep="anchor"><span class="dot"></span>its beacon block rebuilt in your browser<span class="note" id="tnote-anchor"></span></li>
+      <li data-tstep="trie"><span class="dot"></span>receipt trie rebuilt, root equals the header<span class="note" id="tnote-trie"></span></li>
+      <li data-tstep="call"><span class="dot"></span>Ethereum verifies the receipt<span class="note" id="tnote-call"></span></li>
+    </ol>
+    <div id="t-result" class="result" hidden>
+      <div class="result-head">proven on Ethereum</div>
+      <dl id="t-rows"></dl>
+    </div>
+    <div id="t-failure" class="failure" hidden></div>
+  </section>
+
+  <section class="run-foot">
+    <p>
+      The arguments refresh automatically: a pipeline captures fresh proofs at the mainnet head,
+      checks them against the live contract, and publishes them here. The EIP-4788 ring buffer
+      holds roughly 27 hours of roots, so each card shows the age of its anchor and refuses to
+      pretend once it expires. The deployment story and every transaction hash live in the
+      <a href="docs.html#deployment.md">deployment evidence</a>.
+    </p>
+  </section>
+</main>
+
+<script src="anchor.js"></script>
+<script src="receipts.js"></script>
+<script src="run.js"></script>
+</body>
+</html>

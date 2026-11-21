@@ -15,7 +15,7 @@ hashes and the nodes' own words, in this page and in
 `docs/frame_evidence.json`.
 
 The gate reuses the verification library behind the BeaconProver deployed
-on mainnet at `0xcB5cAc58273dE7b106E0a2a1387d4F42868E6e7b` and adds two
+on mainnet at `0xDd356690270534B0DCe6755d77bCA554c9c54603` and adds two
 functions for the devnet's newer fork, `verify_gloas_latest_block_hash`
 and `execution_state_root`. The live demonstration runs on
 bogota-devnet-2, the public devnet where client teams test the fork.

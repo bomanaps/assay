@@ -466,7 +466,17 @@ async function loadHalo() {
     " · execution block " + meta.executionBlock.toLocaleString("en-US") +
     " · " + meta.when + " · rerun: " + meta.reproduce;
   document.getElementById("scale").hidden = false;
-  observe("#halo-count", (element) => countUp(element, total));
+  let alltime = total;
+  try {
+    const stats = await fetch("bulk_stats.json", { cache: "no-store" }).then((r) => r.json());
+    if (stats.accounts + stats.slots > alltime) {
+      alltime = stats.accounts + stats.slots;
+      const since = stats.since.slice(0, 10);
+      document.querySelector(".halo-caption").textContent =
+        "facts proven since " + since + " · grows with every daily harvest";
+    }
+  } catch (error) {}
+  observe("#halo-count", (element) => countUp(element, alltime));
 }
 
 loadHalo().catch(() => {});

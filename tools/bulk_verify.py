@@ -245,6 +245,14 @@ def main(argv):
     }
     out = pathlib.Path(arguments.out)
     out.write_text(json.dumps(payload) + "\n")
+    stats_path = out.parent / "bulk_stats.json"
+    stats = {"since": when, "runs": 0, "accounts": 0, "slots": 0}
+    if stats_path.exists():
+        stats = json.loads(stats_path.read_text())
+    stats["runs"] += 1
+    stats["accounts"] += accounts
+    stats["slots"] += slots
+    stats_path.write_text(json.dumps(stats, indent=1, sort_keys=True) + "\n")
     print(f"verified: {accounts} accounts and {slots} slots from one beacon root; receipts at {out}")
 
 
