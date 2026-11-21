@@ -84,6 +84,25 @@ def main(argv):
         verdict = re.search(r"verified: (\d+) linked accounts and (\d+) slots", done.stdout)
         if not verdict:
             fail("the CLI output holds no verdict line")
+        try:
+            args_tool = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "gen_run_args.py"),
+                    str(work / "fixtures"),
+                    str(ROOT / "docs" / "run.json"),
+                    "check",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            fail("run argument build timed out against the RPC")
+        print(args_tool.stdout, end="")
+        if args_tool.returncode != 0:
+            fail(f"run argument build failed:\n{args_tool.stdout}{args_tool.stderr}")
     accounts = int(verdict.group(1))
     slots = int(verdict.group(2))
     when = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()

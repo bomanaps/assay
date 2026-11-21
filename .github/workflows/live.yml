@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: live
+  group: publish
   cancel-in-progress: false
 
 env:
@@ -48,7 +48,7 @@ jobs:
         run: |
           git config user.name "live-verification"
           git config user.email "actions@users.noreply.github.com"
-          git add docs/live_log.md docs/live_stats.json
+          git add docs/live_log.md docs/live_stats.json docs/run.json
           git commit -m "Live: fresh mainnet proofs verified from the beacon root"
           git pull --rebase origin main
           git push origin HEAD:main

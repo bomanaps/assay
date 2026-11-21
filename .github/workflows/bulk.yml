@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: bulk
+  group: publish
   cancel-in-progress: false
 
 env:
@@ -20,7 +20,7 @@ jobs:
   bulk-verify-mainnet-accounts:
     if: github.repository == 'bomanaps/assay'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -45,11 +45,40 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install -r tools/requirements-capture.txt
           cd tools
           "$RUNNER_TEMP/venv/bin/python3" -I bulk_verify.py "$RUNNER_TEMP/cli-out/assay" --accounts 1500 --blocks 10
-      - name: Commit the receipts
+      - name: Commit the harvest before the state capture, so a capture failure cannot discard it
         run: |
           git config user.name "bulk-verification"
           git config user.email "actions@users.noreply.github.com"
-          git add docs/bulk_receipts.json
+          git add docs/bulk_receipts.json docs/bulk_stats.json
           git commit -m "Bulk: fresh mainnet accounts verified from one beacon root"
+          git pull --rebase origin main
+          git push origin HEAD:main
+      - name: Rebuild the state-heavy run arguments from a fresh beacon state
+        env:
+          RPC_URL: ${{ secrets.RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
+          BEACON_URL: ${{ secrets.BEACON_URL || 'https://ethereum-beacon-api.publicnode.com' }}
+        run: |
+          work="$RUNNER_TEMP/statecap"
+          mkdir -p "$work/fixtures"
+          cp -R tools "$work/tools"
+          cd "$work"
+          source="${CHECKPOINT_URL:-https://mainnet.checkpoint.sigp.io}"
+          for try in 1 2; do
+            curl -fsSL -m 1500 -H "Accept: application/octet-stream" \
+              -o state_finalized.ssz \
+              "$source/eth/v2/debug/beacon/states/finalized" && break
+            echo "state download try $try failed"; sleep 15
+          done
+          test -s state_finalized.ssz
+          slot=$("$RUNNER_TEMP/venv/bin/python3" -c "import struct; print(struct.unpack('<Q', open('state_finalized.ssz','rb').read(48)[40:48])[0])")
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/capture_beacon.py validator state_finalized.ssz 2345678 validator_beacon
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/capture_beacon.py history state_finalized.ssz $((slot - 7000)) history_day_old
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/capture_beacon.py deephistory state_finalized.ssz 6209536 history_capella_first
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_run_args.py "$work/fixtures" docs/run.json check
+      - name: Commit the run arguments
+        run: |
+          git add docs/run.json
+          git commit -m "Bulk: state proof arguments rebuilt and checked"
           git pull --rebase origin main
           git push origin HEAD:main

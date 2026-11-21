@@ -33,7 +33,7 @@ import capture_beacon
 import capture_getproof
 import demo_fork
 
-MAINNET_PROVER = "0xcB5cAc58273dE7b106E0a2a1387d4F42868E6e7b"
+MAINNET_PROVER = "0xDd356690270534B0DCe6755d77bCA554c9c54603"
 ADDRESS_PATTERN = re.compile(r"0x[0-9a-fA-F]{40}")
 PROVE_STORAGE = demo_fork.PROVE_STORAGE
 
