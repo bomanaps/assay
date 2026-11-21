@@ -1,0 +1,123 @@
+{
+  "manifest_version": 1,
+  "module": {
+    "file": "frontier.wasm",
+    "sha256": "59c4a54e0dbb1175dc508c221ed2610bf343f9918e677419d2a7438732ba3297",
+    "size": 35046,
+    "initial_memory_pages": 18
+  },
+  "contract_version": 3,
+  "optimization": "2",
+  "compiler": "fe 26.7.0 (2e9a011df)",
+  "imports": [
+    {
+      "module": "env",
+      "name": "__fe_revert",
+      "kind": "function",
+      "type": {
+        "params": ["i32", "i32"],
+        "results": []
+      }
+    }
+  ],
+  "exports": [
+    {
+      "name": "alloc",
+      "kind": "function",
+      "role": "allocator",
+      "params": [
+        {
+          "name": "size",
+          "type": "u32",
+          "wasm": ["i32"]
+        }
+      ],
+      "result": {
+        "type": "u32",
+        "wasm": ["i32"]
+      }
+    },
+    {
+      "name": "arena_mark",
+      "kind": "function",
+      "role": "allocator",
+      "params": [],
+      "result": {
+        "type": "u32",
+        "wasm": ["i32"]
+      }
+    },
+    {
+      "name": "arena_release",
+      "kind": "function",
+      "role": "allocator",
+      "params": [
+        {
+          "name": "mark",
+          "type": "u32",
+          "wasm": ["i32"]
+        }
+      ],
+      "result": null
+    },
+    {
+      "name": "branch_check",
+      "kind": "function",
+      "params": [
+        {
+          "name": "blob",
+          "type": "HostText",
+          "wasm": ["i32", "i32"]
+        }
+      ],
+      "result": {
+        "type": "u64",
+        "wasm": ["i64"]
+      }
+    },
+    {
+      "name": "memory",
+      "kind": "memory"
+    },
+    {
+      "name": "trie_check",
+      "kind": "function",
+      "params": [
+        {
+          "name": "blob",
+          "type": "HostText",
+          "wasm": ["i32", "i32"]
+        }
+      ],
+      "result": {
+        "type": "u64",
+        "wasm": ["i64"]
+      }
+    },
+    {
+      "name": "xmss_check",
+      "kind": "function",
+      "params": [
+        {
+          "name": "key_text",
+          "type": "HostText",
+          "wasm": ["i32", "i32"]
+        },
+        {
+          "name": "message_text",
+          "type": "HostText",
+          "wasm": ["i32", "i32"]
+        },
+        {
+          "name": "signature_text",
+          "type": "HostText",
+          "wasm": ["i32", "i32"]
+        }
+      ],
+      "result": {
+        "type": "u64",
+        "wasm": ["i64"]
+      }
+    }
+  ]
+}

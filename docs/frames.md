@@ -1,17 +1,13 @@
 # Proof-gated frame transactions
 
-Ethereum's next fork, Hegotá, plans a new transaction type called a frame
-transaction (EIP-8141). Its validity is decided by contract code instead of
-a fixed signature check: a transaction carries a list of frames, and a
-VERIFY frame must call the new APPROVE instruction before anything runs or
-anyone pays. I built the gate for that seat: a contract that approves
-paying for a transaction only when a fact about chain state proves
-against a beacon root. The proof chain runs on the live devnet today,
-inside an ordinary type 2 transaction that calls the gate, and the frame
-transaction that would let the same proof gate the payment was rejected
-by the devnet's mempool rules, the gas budget first, with the trace rules
-of finding 2 waiting behind it. Both halves are recorded with transaction
-hashes and the nodes' own words, in this page and in
+We put the verifier in the seat frame transactions create, a contract
+that approves paying for a transaction only when a fact about chain
+state proves against a beacon root. The proof chain already runs on the
+live frames devnet, inside an ordinary type 2 transaction that calls
+the gate. The frame transaction that would let the same proof approve
+the payment was rejected by every node on the gas budget. Both halves
+are recorded with
+transaction hashes and the nodes' own words, on this page and in
 `docs/frame_evidence.json`.
 
 The gate reuses the verification library behind the BeaconProver deployed
@@ -98,8 +94,8 @@ operands are out of order, or if the listing stops matching the bytes.
 ## What implementing this surfaced
 
 Draft EIPs live on implementation feedback, and a heavy validation frame
-is exactly the case the current arguments are about. Three findings came
-out of this build, and all three carry recorded node answers, committed
+is exactly the case the current arguments are about. Two findings came
+out of this build, and both carry recorded node answers, committed
 in `docs/frame_evidence.json`.
 
 **Proof verification does not fit the public mempool's gas ceiling, and I
@@ -121,16 +117,6 @@ mainnet contract). So a proof-gated frame fails the current ceiling
 everywhere, mainnet-grade proofs fail even the proposed one, and this
 workload class belongs to the alternative mempool (ERC-8421) that was
 written for budgets above the public ceiling.
-
-**The ban is structural, not just a gas number.** The pinned revision's
-"Validation Trace Rules" and "Banned Opcodes" sections ban TIMESTAMP
-during validation-prefix execution and reject any trace that "reads
-storage outside `tx.sender`". Reading the 4788 beacon root needs the
-contract's storage, and the gate's own policy lives in its storage too.
-Raising the gas ceiling therefore would not admit a beacon-anchored
-validation frame; proof-gated validity lives in the alternative mempool
-by design, and that consequence deserves an explicit sentence in the
-mempool section of the EIP.
 
 **The wire format on a live network is already a composition, and the
 error for getting it wrong says nothing.** The devnet runs EIP-8250,
@@ -199,9 +185,8 @@ while the devnet lives.
 
 So the state of things, exactly: the proof chain runs on the frames
 devnet inside an ordinary transaction, and the frame path that would let
-the same proof approve the payment was refused at the mempool door, by
-the budget first, with the trace rules of finding 2 behind it; the
-APPROVE step itself therefore remains unexecuted.
+the same proof approve the payment was refused at the mempool door on
+the gas budget. The APPROVE step itself therefore remains unexecuted.
 
 ## Honest limits
 

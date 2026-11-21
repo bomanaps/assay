@@ -1,0 +1,6 @@
+[ingot]
+name = "frontier"
+version = "0.1.0"
+
+[dependencies]
+verifier = { path = ".." }

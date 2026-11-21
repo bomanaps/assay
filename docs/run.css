@@ -403,3 +403,71 @@
 
 .why-cards { max-width: 760px; padding-top: 26px; }
 .why-cards p { color: var(--muted); font-size: 0.9rem; border-left: 2px solid var(--gold); padding-left: 16px; margin: 0; }
+
+.frontier { padding-top: 72px; }
+
+.frontier h2 { font-family: var(--display); font-size: 1.6rem; margin: 0 0 8px; }
+
+.frontier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 20px;
+  margin-top: 18px;
+}
+
+.fcard {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(170deg, var(--surface-2), var(--surface) 70%);
+  padding: 24px;
+}
+
+.fcard h3 { font-family: var(--display); margin: 12px 0 8px; font-size: 1.15rem; }
+
+.fcard p { color: var(--muted); font-size: 0.88rem; line-height: 1.55; }
+
+.ftag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.live-tag { color: var(--pass); border: 1px solid rgba(63, 185, 80, 0.45); }
+
+.rec-tag { color: var(--gold); border: 1px solid rgba(255, 178, 36, 0.45); }
+
+.fbuttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px; }
+
+.runbtn.ghostbtn { background: transparent; color: var(--gold); border: 1px solid rgba(255, 178, 36, 0.5); }
+
+.runbtn.ghostbtn:hover { box-shadow: none; border-color: var(--gold); }
+
+.fevidence {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 0.82rem;
+  margin: 14px 0;
+}
+
+.fevidence dt { color: var(--muted); }
+
+.fevidence dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+
+.freproduce summary { cursor: pointer; color: var(--muted); font-size: 0.82rem; }
+
+.feline {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.feline a { color: var(--gold); }
