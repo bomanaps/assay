@@ -40,6 +40,8 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_fixtures.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_bench.py check
           "$RUNNER_TEMP/venv/bin/python3" -I tools/oracle_xmss.py check
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/gen_frontier.py check
+          "$RUNNER_TEMP/venv/bin/python3" -I tools/check_wasm.py
       - name: Install solc, checked against its SHA-256
         run: |
           mkdir -p "$RUNNER_TEMP/solc-bin"

@@ -1,5 +1,15 @@
 const RPC = "https://ethereum-rpc.publicnode.com";
 const WINDOW_SECONDS = 8191 * 12;
+const GITHUB = "https://github.com/bomanaps/assay/blob/main/";
+const EVM_FE = "every hash walked by Fe code compiled with fe 26.6.0 (5b3f96a), deployed as ";
+
+const PROVENANCE = "https://github.com/bomanaps/assay/actions/workflows/provenance.yml";
+
+function feLine(source, note) {
+  return "<div class=\"feline\">" + note +
+    "<a href=\"" + GITHUB + source + "\">" + source + "</a> · " +
+    "<a href=\"" + PROVENANCE + "\">watch the build proven</a></div>";
+}
 
 const state = { data: null, busy: false };
 
@@ -159,6 +169,11 @@ async function run(id) {
       "eth_call to " + state.data.contract + "\n\ncalldata (" + bytes + " bytes):\n" + entry.calldata +
       "\n\nreturned:\n" + answer;
 
+    document.getElementById("result-rows").insertAdjacentHTML(
+      "afterend",
+      feLine("src/consumer.fe", EVM_FE + short(state.data.contract) + " · source ")
+    );
+    document.getElementById("result").querySelectorAll(".feline + .feline").forEach((n) => n.remove());
     document.getElementById("result").hidden = false;
     card.classList.remove("running");
     card.classList.add("proven");
@@ -312,7 +327,8 @@ document.getElementById("yours-form").addEventListener("submit", async (event) =
       "<dt>address</dt><dd>" + address + "</dd>" +
       "<dt>slot</dt><dd>" + slotText + "</dd>" +
       "<dt>value</dt><dd class=\"big\">0x" + value.toString(16).padStart(64, "0") + "</dd>" +
-      "<dt>beacon slot</dt><dd>" + provenSlot.toLocaleString("en-US") + "</dd>";
+      "<dt>beacon slot</dt><dd>" + provenSlot.toLocaleString("en-US") + "</dd>" +
+      feLine("src/storage.fe", EVM_FE + short(state.data.contract) + " · source ");
     document.getElementById("y-result").hidden = false;
   } catch (error) {
     failure.hidden = false;
@@ -405,7 +421,8 @@ document.getElementById("tx-form").addEventListener("submit", async (event) => {
       "<dt>cumulative gas</dt><dd>" + BigInt("0x" + word(1)).toLocaleString("en-US") + "</dd>" +
       "<dt>tx type</dt><dd>" + BigInt("0x" + word(2)) + "</dd>" +
       "<dt>log count</dt><dd>" + BigInt("0x" + word(3)) + "</dd>" +
-      "<dt>beacon slot</dt><dd>" + BigInt("0x" + word(4)).toLocaleString("en-US") + "</dd>";
+      "<dt>beacon slot</dt><dd>" + BigInt("0x" + word(4)).toLocaleString("en-US") + "</dd>" +
+      feLine("src/receipt.fe", EVM_FE + short(state.data.contract) + " · source ");
     document.getElementById("t-result").hidden = false;
   } catch (error) {
     failure.hidden = false;
@@ -421,3 +438,117 @@ function tstep(name, status, note) {
   row.classList.toggle("done", status === "done");
   if (note !== undefined) document.getElementById("tnote-" + name).textContent = note;
 }
+
+async function loadFrontier() {
+  const data = await fetch("frontier_data.json", { cache: "no-store" }).then((r) => r.json());
+  const frames = data.frames;
+  const dora = frames.explorer;
+  const refusal = frames.frameSubmissions.find((s) => s.upstreamErrors) || { error: "rejected" };
+  const rows = document.getElementById("frames-evidence");
+  rows.innerHTML =
+    "<dt>network</dt><dd>" + frames.network + " · chain " + frames.chainId + "</dd>" +
+    "<dt>frame gate</dt><dd>" + frames.contracts.frameGate + "</dd>" +
+    "<dt>pay shim</dt><dd>" + frames.contracts.payShim + "</dd>" +
+    "<dt>proof verified on chain</dt><dd><a href=\"" + dora + "\">" +
+      frames.onChainVerification.hash.slice(0, 20) + "…</a> · block " +
+      frames.onChainVerification.block + " · " +
+      frames.onChainVerification.gasUsed.toLocaleString("en-US") + " gas</dd>" +
+    "<dt>frame refused by all nodes</dt><dd>“" + frames.frameSubmissions[1].error + "”</dd>";
+  document.getElementById("frames-commands").textContent =
+    "python3 -I tools/frame_devnet.py key <state-dir>\n" +
+    "fe build -O 2 --emit bytecode --out-dir <build> .\n" +
+    "python3 -I tools/frame_devnet.py deploy <state-dir> <build>/FrameGate.bin\n" +
+    "<specs-venv-python> -I tools/frame_devnet.py send <state-dir> <consensus-specs>\n" +
+    "python3 -I tools/frame_devnet.py status <state-dir>";
+  return data;
+}
+
+const frontierData = loadFrontier().catch((error) => {
+  const failure = document.getElementById("f-failure");
+  failure.hidden = false;
+  failure.textContent = "The frontier data failed to load: " + (error.message || error);
+  return null;
+});
+
+async function armFrontier() {
+  const data = await frontierData;
+  if (!data) return;
+  try {
+    await FRONTIER.load("wasm/frontier.wasm");
+  } catch (error) {
+    document.getElementById("f-failure").hidden = false;
+    document.getElementById("f-failure").textContent =
+      "The WebAssembly verifier failed to load: " + error.message;
+    return;
+  }
+  ["f-pq", "f-xmss", "f-attacks"].forEach((id) => {
+    document.getElementById(id).disabled = false;
+  });
+
+  let wasmCompiler = "";
+  fetch("wasm/frontier.manifest.json", { cache: "no-store" })
+    .then((reply) => reply.json())
+    .then((manifest) => { wasmCompiler = manifest.compiler; })
+    .catch(() => {});
+
+  function show(head, rows, source) {
+    document.getElementById("f-head").textContent = head;
+    document.getElementById("f-rows").innerHTML = rows +
+      feLine(source, "verified by Fe code compiled with " + (wasmCompiler || "the pinned Fe") +
+        ", running in this tab · source ");
+    document.getElementById("f-result").hidden = false;
+    document.getElementById("f-failure").hidden = true;
+  }
+
+  document.getElementById("f-pq").addEventListener("click", () => {
+    const started = performance.now();
+    const lines = data.pq.proofs.map((proof) => {
+      const ok = FRONTIER.branch(data.pq.stateRoot, proof.leaf, proof.gindex, proof.branch) === 1;
+      const flipped = proof.leaf.slice(0, -1) + (proof.leaf.endsWith("0") ? "1" : "0");
+      const tamper = FRONTIER.branch(data.pq.stateRoot, flipped, proof.gindex, proof.branch) === 0;
+      return "<dt>" + proof.field + "</dt><dd>" +
+        (ok ? "proven" : "FAILED") + " · tampered leaf " + (tamper ? "refused" : "ACCEPTED") + "</dd>";
+    });
+    const ms = Math.round(performance.now() - started);
+    show("post-quantum state verified in your browser · " + ms + " ms · spec commit " +
+      data.pq.specCommit.slice(0, 12), lines.join(""), "src/ssz.fe");
+  });
+
+  document.getElementById("f-xmss").addEventListener("click", () => {
+    const started = performance.now();
+    let accepted = 0, refused = 0, rejected = 0, disagreements = 0;
+    for (const vector of data.xmss) {
+      const got = FRONTIER.xmss(vector.publicKey, vector.message, vector.signature);
+      const want = vector.output === null ? 2 : (vector.output ? 1 : 0);
+      if (got !== want) disagreements++;
+      if (got === 1) accepted++; else if (got === 0) refused++; else rejected++;
+    }
+    const ms = Math.round(performance.now() - started);
+    show("40 leanXMSS vectors verified in your browser · " + ms + " ms",
+      "<dt>valid signatures accepted</dt><dd>" + accepted + "</dd>" +
+      "<dt>forgeries refused</dt><dd>" + refused + "</dd>" +
+      "<dt>malformed inputs rejected</dt><dd>" + rejected + "</dd>" +
+      "<dt>disagreements with EthLib</dt><dd" + (disagreements ? "" : " class=\"big\"") + ">" +
+      disagreements + "</dd>", "src/xmss.fe");
+  });
+
+  document.getElementById("f-attacks").addEventListener("click", () => {
+    const started = performance.now();
+    const lines = data.vectors.map((vector) => {
+      const got = FRONTIER.trie(vector.root, vector.key, vector.nodes);
+      const want = FRONTIER.TRIE_CODES[vector.expect];
+      const verdict = got === want
+        ? (want <= 1 ? "accepted, as committed" : "refused: " + vector.expect)
+        : "DISAGREES WITH THE COMMITTED VERDICT";
+      return "<dt>" + vector.name + "</dt><dd>" + verdict + "</dd>";
+    });
+    const ms = Math.round(performance.now() - started);
+    show("12 attack proofs judged in your browser · " + ms + " ms", lines.join(""), "src/mpt.fe");
+  });
+}
+
+armFrontier().catch((error) => {
+  const failure = document.getElementById("f-failure");
+  failure.hidden = false;
+  failure.textContent = "The frontier failed to arm: " + (error.message || error);
+});

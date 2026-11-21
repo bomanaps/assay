@@ -461,10 +461,13 @@ async function loadHalo() {
     meta.slots.toLocaleString("en-US") +
     " storage slots on the contracts among them, every one verified by the native CLI from beacon root " +
     meta.beaconRoot.slice(0, 18) + "… alone. Each tick is one receipt.";
-  document.getElementById("halo-meta").textContent =
+  document.getElementById("halo-meta").innerHTML =
     "beacon slot " + meta.beaconSlot.toLocaleString("en-US") +
     " · execution block " + meta.executionBlock.toLocaleString("en-US") +
-    " · " + meta.when + " · rerun: " + meta.reproduce;
+    " · " + meta.when + " · rerun: " + meta.reproduce +
+    "<br>every receipt verified by the Fe native CLI, compiled with fe 26.6.0 from " +
+    "<a href=\"https://github.com/bomanaps/assay/blob/main/cli/src/lib.fe\">cli/src</a> and " +
+    "<a href=\"https://github.com/bomanaps/assay/blob/main/src/lib.fe\">src</a>";
   document.getElementById("scale").hidden = false;
   let alltime = total;
   try {

@@ -57,6 +57,11 @@ pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
     software_hash_pair(left, right)
 }
 
+#[cfg(target = "wasm")]
+pub fn hash_pair(_ left: u256, _ right: u256) -> u256 {
+    software_hash_pair(left, right)
+}
+
 #[cfg(target = "evm")]
 pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
     if bytes.len() != 48 {
@@ -68,6 +73,18 @@ pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
 }
 
 #[cfg(target = "native")]
+pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
+    if bytes.len() != 48 {
+        return Result::Err(ProofError::WrongLength)
+    }
+    var buffer = MemBuffer::new(64)
+    buffer.copy_from(dest_offset: 0, bytes)
+    Result::Ok(
+        software_hash_pair(buffer.read_word(0), buffer.read_word(32)),
+    )
+}
+
+#[cfg(target = "wasm")]
 pub fn bytes48_leaf(_ bytes: MemSpan) -> Result<ProofError, u256> {
     if bytes.len() != 48 {
         return Result::Err(ProofError::WrongLength)

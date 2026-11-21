@@ -35,6 +35,7 @@ async function show(entry, link) {
       return r.text();
     });
     body.innerHTML = marked.parse(text, { mangle: false, headerIds: false });
+    linkifyCode(body, entry.file);
   } catch {
     body.innerHTML = "<p class=\"docs-loading\">could not load " + entry.file + "</p>";
   }
@@ -66,3 +67,25 @@ available().then((entries) => {
 }).catch(() => {
   body.innerHTML = "<p class=\"docs-loading\">could not list documents</p>";
 });
+
+function linkifyCode(body, file) {
+  const GITHUB = "https://github.com/bomanaps/assay/blob/main/";
+  body.querySelectorAll("code").forEach((code) => {
+    if (code.parentElement.tagName === "A" || code.parentElement.tagName === "PRE") return;
+    const text = code.textContent.trim();
+    let target = null;
+    if (/^(src|tools|cli|docs|fixtures|vectors|wasm|bench)\/[\w./-]+$/.test(text)) {
+      target = GITHUB + text;
+    } else if (/^0x[0-9a-fA-F]{40}$/.test(text)) {
+      target = "https://etherscan.io/address/" + text;
+    } else if (/^0x[0-9a-fA-F]{64}$/.test(text) && file !== "frames.md") {
+      target = "https://etherscan.io/tx/" + text;
+    }
+    if (target) {
+      const anchor = document.createElement("a");
+      anchor.href = target;
+      code.replaceWith(anchor);
+      anchor.appendChild(code);
+    }
+  });
+}

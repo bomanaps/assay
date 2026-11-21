@@ -1,0 +1,104 @@
+use core::ptr::MemSpan
+use core::{MemBuffer, MemVec}
+use std::wasm::HostText
+use verifier::{
+    proof_error_code,
+    verify_branch,
+    verify_trie,
+    verify_xmss,
+    GIndex,
+    NodeList,
+    Proven,
+    Root,
+    TrieKey,
+}
+
+const MALFORMED: u64 = 90
+
+#[unsafe(export)]
+pub fn xmss_check(key_text: HostText, message_text: HostText, signature_text: HostText) -> u64 {
+    let public_key = unsafe {
+        MemSpan::from_raw_parts(ptr: (key_text.addr() as usize) as *u8, len: key_text.len() as usize)
+    }
+    let message = unsafe {
+        MemSpan::from_raw_parts(ptr: (message_text.addr() as usize) as *u8, len: message_text.len() as usize)
+    }
+    let signature = unsafe {
+        MemSpan::from_raw_parts(ptr: (signature_text.addr() as usize) as *u8, len: signature_text.len() as usize)
+    }
+    match verify_xmss(public_key, message, signature) {
+        Result::Ok(true) => 1,
+        Result::Ok(false) => 0,
+        Result::Err(_) => 2,
+    }
+}
+
+#[unsafe(export)]
+pub fn branch_check(blob: HostText) -> u64 {
+    let data = unsafe {
+        MemSpan::from_raw_parts(ptr: (blob.addr() as usize) as *u8, len: blob.len() as usize)
+    }
+    if data.len() < 72 || (data.len() - 72) % 32 != 0 {
+        return MALFORMED
+    }
+    let root = data.read_word(0)
+    let leaf = data.read_word(32)
+    var gindex: u256 = 0
+    var g: usize = 0
+    while g < 8 {
+        gindex = (gindex << 8) | (data.byte_at(64 + g) as u256)
+        g += 1
+    }
+    var branch: MemVec<u256> = MemVec::new()
+    var at: usize = 72
+    while at < data.len() {
+        branch.push(data.read_word(at))
+        at += 32
+    }
+    match verify_branch(
+        root: Root::new(root),
+        leaf,
+        gindex: GIndex::new(gindex),
+        branch: branch.as_slice(),
+    ) {
+        Result::Ok(()) => 1,
+        Result::Err(_) => 0,
+    }
+}
+
+#[unsafe(export)]
+pub fn trie_check(blob: HostText) -> u64 {
+    let data = unsafe {
+        MemSpan::from_raw_parts(ptr: (blob.addr() as usize) as *u8, len: blob.len() as usize)
+    }
+    if data.len() < 66 {
+        return MALFORMED
+    }
+    let root = data.read_word(0)
+    let key = data.read_word(32)
+    let count = ((data.byte_at(64) as usize) << 8) | (data.byte_at(65) as usize)
+    var nodes = NodeList::new()
+    var at: usize = 66
+    var seen: usize = 0
+    while seen < count {
+        if at + 2 > data.len() {
+            return MALFORMED
+        }
+        let length = ((data.byte_at(at) as usize) << 8) | (data.byte_at(at + 1) as usize)
+        at += 2
+        if at + length > data.len() {
+            return MALFORMED
+        }
+        nodes.push(data.slice(offset: at, len: length))
+        at += length
+        seen += 1
+    }
+    if at != data.len() {
+        return MALFORMED
+    }
+    match verify_trie(root: Root::new(root), key: TrieKey::new(key), nodes) {
+        Result::Ok(Proven::Present(_)) => 1,
+        Result::Ok(Proven::Absent) => 0,
+        Result::Err(error) => 100 + proof_error_code(error) as u64,
+    }
+}

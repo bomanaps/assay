@@ -144,6 +144,53 @@
     <div id="t-failure" class="failure" hidden></div>
   </section>
 
+  <section class="frontier" id="frontier">
+    <h2>The frontier</h2>
+    <p class="run-sub">
+      Two pieces of Ethereum's future.
+    </p>
+
+    <div class="frontier-grid">
+      <article class="fcard">
+        <div class="ftag live-tag">runs offline in your browser</div>
+        <h3>Post-quantum Ethereum</h3>
+        <p>
+          The coming quantum fork replaces signatures, not hashing, so our verifier survives it
+          unchanged. Press the buttons and your browser verifies Ethereum's own draft of that
+          world with our Fe verifier compiled to WebAssembly. After the page loads, nothing touches the network.
+        </p>
+        <div class="fbuttons">
+          <button class="runbtn" id="f-pq" disabled>Verify the post-quantum state</button>
+          <button class="runbtn ghostbtn" id="f-xmss" disabled>Run the 40 signature vectors</button>
+          <button class="runbtn ghostbtn" id="f-attacks" disabled>Judge the 12 attack proofs</button>
+        </div>
+        <div id="f-result" class="result" hidden>
+          <div class="result-head" id="f-head">verified in your browser</div>
+          <dl id="f-rows"></dl>
+        </div>
+        <div id="f-failure" class="failure" hidden></div>
+      </article>
+
+      <article class="fcard">
+        <div class="ftag rec-tag">recorded devnet evidence</div>
+        <h3>Frame transactions</h3>
+        <p>
+          On Ethereum's next-fork devnet, our gate verified a storage proof on chain inside a
+          real transaction, and the frame transaction that would let that proof approve its own
+          gas was refused by every node for exceeding the validation budget. This is the one
+          section without a live button because the devnet's servers refuse connections from
+          browsers. The evidence below is recorded, and the commands rerun it against the
+          devnet from any terminal.
+        </p>
+        <dl class="fevidence" id="frames-evidence"></dl>
+        <details class="freproduce">
+          <summary>reproduce it yourself</summary>
+          <pre class="raw" id="frames-commands"></pre>
+        </details>
+      </article>
+    </div>
+  </section>
+
   <section class="run-foot">
     <p>
       The arguments refresh automatically: a pipeline captures fresh proofs at the mainnet head,
@@ -157,6 +204,7 @@
 
 <script src="anchor.js"></script>
 <script src="receipts.js"></script>
+<script src="frontier.js"></script>
 <script src="run.js"></script>
 </body>
 </html>

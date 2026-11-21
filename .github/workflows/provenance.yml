@@ -1,0 +1,60 @@
+name: Provenance
+
+on:
+  schedule:
+    - cron: "9 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FE_VERSION: v26.6.0
+  FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
+  FE_MASTER_COMMIT: 2e9a011df58732d94ee342819f9e95998a638a75
+
+jobs:
+  mainnet-contract-is-fe-output:
+    if: github.repository == 'bomanaps/assay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install Fe from the release, checked against its SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/fe-bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe-bin/fe" "https://github.com/argotorg/fe/releases/download/$FE_VERSION/fe_linux_amd64"
+          echo "$FE_SHA256  $RUNNER_TEMP/fe-bin/fe" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/fe-bin/fe"
+      - name: Rebuild the runtime and compare it with the code on mainnet
+        env:
+          RPC_URL: ${{ secrets.RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
+        run: FE="$RUNNER_TEMP/fe-bin/fe" python3 tools/verify_build.py
+
+  browser-module-is-fe-output:
+    if: github.repository == 'bomanaps/assay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check out the pinned Fe compiler source
+        run: |
+          git clone --filter=blob:none https://github.com/argotorg/fe "$RUNNER_TEMP/fe-src"
+          git -C "$RUNNER_TEMP/fe-src" checkout "$FE_MASTER_COMMIT"
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
+        with:
+          workspaces: ${{ runner.temp }}/fe-src
+      - name: Build the pinned compiler from source
+        run: cargo build --release --features wasm -p fe
+        working-directory: ${{ runner.temp }}/fe-src
+      - name: Rebuild the browser module and compare it with the committed bytes
+        run: |
+          cd wasm
+          "$RUNNER_TEMP/fe-src/target/release/fe" build --backend wasm --emit wasm -O 2 --out-dir "$RUNNER_TEMP/wasm-out" .
+          sha256sum "$RUNNER_TEMP/wasm-out/frontier.wasm" ../docs/wasm/frontier.wasm
+          cmp "$RUNNER_TEMP/wasm-out/frontier.wasm" ../docs/wasm/frontier.wasm
+          python3 ../tools/check_wasm.py
+      - name: Run every committed vector through the rebuilt module
+        run: |
+          cp "$RUNNER_TEMP/wasm-out/frontier.wasm" docs/wasm/frontier.wasm
+          node wasm/test_frontier.mjs
