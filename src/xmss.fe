@@ -1,0 +1,236 @@
+use core::{MemBuffer, MemSpan}
+use std::evm::crypto::keccak256
+use ingot::ProofError
+
+pub const DIGEST_LEN: usize = 16
+pub const MESSAGE_LEN: usize = 32
+pub const RANDOMIZER_LEN: usize = 16
+pub const CHAIN_TOP: u256 = 3
+pub const DIGIT_COUNT: usize = 64
+pub const CHAIN_COUNT: usize = 58
+pub const TARGET_SUM: u256 = 106
+pub const LAYER_HEIGHT: usize = 16
+pub const PUB_KEY_LEN: usize = DIGEST_LEN + DIGEST_LEN
+pub const LEAF_INDEX_LEN: usize = 4
+pub const LAYER_SIG_LEN: usize = RANDOMIZER_LEN
+    + CHAIN_COUNT * DIGEST_LEN
+    + LAYER_HEIGHT * DIGEST_LEN
+pub const SIG_LEN: usize = LEAF_INDEX_LEN + 2 * LAYER_SIG_LEN
+
+static_assert(LAYER_SIG_LEN == 1200)
+static_assert(SIG_LEN == 2404)
+
+const HIGH_HALF: u256 = ((1 << 128) - 1) << 128
+
+const TAU_CHAIN: u256 = 1
+const TAU_LEAF: u256 = 2
+const TAU_NODE: u256 = 3
+const TAU_MSG: u256 = 12
+
+const LAYER_BIT: u256 = 1 << 23
+
+fn address(tau: u256, mu: u256, hi: u256, lo: u256) -> u256 {
+    ((lo & 0xff) << 248)
+        | (((lo >> 8) & 0xff) << 240)
+        | (((lo >> 16) & 0xff) << 232)
+        | (((lo >> 24) & 0xff) << 224)
+        | ((hi & 0xff) << 216)
+        | (((hi >> 8) & 0xff) << 208)
+        | (((hi >> 16) & 0xff) << 200)
+        | ((tau + 32 * mu) << 192)
+}
+
+fn digest_of(_ buffer: MemBuffer) -> u256 {
+    keccak256(buffer.span()) & HIGH_HALF
+}
+
+fn chain_step(pp: u256, layer: u256, e: u256, chain: usize, position: u256, value: u256) -> u256 {
+    var buffer = MemBuffer::new(64)
+    buffer.write_word(offset: 0, value: pp)
+    buffer
+        .write_word(
+            offset: 16,
+            value: address(
+                tau: TAU_CHAIN,
+                mu: position,
+                hi: layer * LAYER_BIT,
+                lo: e,
+            ),
+        )
+    buffer.write_word(offset: 32, value: value | ((chain as u256) << 120))
+    digest_of(buffer)
+}
+
+fn digit_at(digest: u256, index: usize) -> u256 {
+    let byte = (digest >> ((248 - 8 * (index / 4)) as u256)) & 0xff
+    (byte >> ((2 * (index % 4)) as u256)) & 3
+}
+
+struct LayerSig { randomizer: u256, chains_at: usize, path_at: usize }
+
+impl Copy for LayerSig {}
+
+fn read16(data: MemSpan, offset: usize) -> u256 {
+    data.read_word(offset) & HIGH_HALF
+}
+
+fn layer_root(
+    pp: u256,
+    layer: u256,
+    e: u256,
+    msg_a: u256,
+    msg_len: usize,
+    data: MemSpan,
+    sig: LayerSig,
+) -> Option<u256> {
+    var buffer = MemBuffer::new(32 + MESSAGE_LEN + RANDOMIZER_LEN + 16)
+    buffer.write_word(offset: 0, value: pp)
+    buffer.write_word(
+            offset: 16,
+            value: address(tau: TAU_MSG, mu: 0, hi: layer * LAYER_BIT, lo: e),
+        )
+    buffer.write_word(offset: 32, value: msg_a)
+    buffer.write_word(offset: 32 + msg_len, value: sig.randomizer)
+    buffer.truncate(32 + msg_len + RANDOMIZER_LEN)
+    let digest = digest_of(buffer)
+
+    var digits: [u256; CHAIN_COUNT] = [0; CHAIN_COUNT]
+    var sum: u256 = 0
+    var i: usize = 0
+    while i < CHAIN_COUNT {
+        digits[i] = digit_at(digest, index: i)
+        sum += digits[i]
+        i += 1
+    }
+    while i < DIGIT_COUNT {
+        if digit_at(digest, index: i) != 0 {
+            return Option::None
+        }
+        i += 1
+    }
+    if sum != TARGET_SUM {
+        return Option::None
+    }
+
+    var leaf_input = MemBuffer::new(32 + CHAIN_COUNT * DIGEST_LEN + 16)
+    leaf_input.write_word(offset: 0, value: pp)
+    leaf_input
+        .write_word(
+            offset: 16,
+            value: address(tau: TAU_LEAF, mu: 0, hi: layer * LAYER_BIT, lo: e),
+        )
+    i = 0
+    while i < CHAIN_COUNT {
+        var value = read16(data, offset: sig.chains_at + i * DIGEST_LEN)
+        var position = digits[i]
+        while position < CHAIN_TOP {
+            value = chain_step(pp, layer, e, chain: i, position, value)
+            position += 1
+        }
+        leaf_input.write_word(offset: 32 + i * DIGEST_LEN, value)
+        i += 1
+    }
+    leaf_input.truncate(32 + CHAIN_COUNT * DIGEST_LEN)
+    var node = digest_of(leaf_input)
+
+    var level: usize = 1
+    while level <= LAYER_HEIGHT {
+        let sibling = read16(data, offset: sig.path_at + (level - 1) * DIGEST_LEN)
+        var pair = node | (sibling >> 128)
+        if (e >> ((level - 1) as u256)) & 1 == 1 {
+            pair = sibling | (node >> 128)
+        }
+        var step = MemBuffer::new(64)
+        step.write_word(offset: 0, value: pp)
+        step.write_word(
+            offset: 16,
+            value: address(
+                tau: TAU_NODE,
+                mu: 0,
+                hi: layer * LAYER_BIT + level as u256,
+                lo: e >> (level as u256),
+            ),
+        )
+        step.write_word(offset: 32, value: pair)
+        node = digest_of(step)
+        level += 1
+    }
+    Option::Some(node)
+}
+
+pub fn verify_xmss(public_key: MemSpan, message: MemSpan, signature: MemSpan) -> Result<
+    ProofError,
+    bool,
+> {
+    if public_key.len() != PUB_KEY_LEN
+        || message.len() != MESSAGE_LEN
+        || signature.len() != SIG_LEN {
+        return Result::Err(ProofError::WrongLength)
+    }
+
+    var padded = MemBuffer::new(SIG_LEN + 32)
+    var i: usize = 0
+    while i + 32 <= SIG_LEN {
+        padded.write_word(offset: i, value: signature.read_word(i))
+        i += 32
+    }
+    var tail: u256 = 0
+    var j: usize = 0
+    while i + j < SIG_LEN {
+        tail |= (signature.byte_at(i + j) as u256) << ((248 - 8 * j) as u256)
+        j += 1
+    }
+    padded.write_word(offset: i, value: tail)
+    padded.truncate(SIG_LEN + DIGEST_LEN)
+    let data = padded.span()
+
+    let key_word = public_key.read_word(0)
+    let root = key_word & HIGH_HALF
+    let pp = key_word << 128
+    let leaf_index = (data.byte_at(0) as u256)
+        | ((data.byte_at(1) as u256) << 8)
+        | ((data.byte_at(2) as u256) << 16)
+        | ((data.byte_at(3) as u256) << 24)
+
+    let bottom = LayerSig {
+        randomizer: read16(data, offset: LEAF_INDEX_LEN),
+        chains_at: LEAF_INDEX_LEN + RANDOMIZER_LEN,
+        path_at: LEAF_INDEX_LEN + RANDOMIZER_LEN + CHAIN_COUNT * DIGEST_LEN,
+    }
+    let top_at = LEAF_INDEX_LEN + LAYER_SIG_LEN
+    let top = LayerSig {
+        randomizer: read16(data, offset: top_at),
+        chains_at: top_at + RANDOMIZER_LEN,
+        path_at: top_at + RANDOMIZER_LEN + CHAIN_COUNT * DIGEST_LEN,
+    }
+
+    let bottom_root = match layer_root(
+        pp,
+        layer: 0,
+        e: leaf_index,
+        msg_a: message.read_word(0),
+        msg_len: MESSAGE_LEN,
+        data,
+        sig: bottom,
+    ) {
+        Option::Some(found) => found,
+        Option::None => {
+            return Result::Ok(false)
+        },
+    }
+    let top_root = match layer_root(
+        pp,
+        layer: 1,
+        e: leaf_index >> (LAYER_HEIGHT as u256),
+        msg_a: bottom_root,
+        msg_len: DIGEST_LEN,
+        data,
+        sig: top,
+    ) {
+        Option::Some(found) => found,
+        Option::None => {
+            return Result::Ok(false)
+        },
+    }
+    Result::Ok(top_root == root)
+}

@@ -18,3 +18,4 @@ pub use synthetic_tries::{self}
 pub use validator_beacon::{self}
 pub use validator_slashed::{self}
 pub use spec_vectors::{self}
+pub use xmss_vectors::{self}

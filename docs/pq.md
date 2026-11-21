@@ -39,6 +39,30 @@ verifier refuses all three.
 - Our independent Python oracle verifies the same fixture with no
   post-quantum tooling involved.
 
+## We verify the new signatures too
+
+The post-quantum chain signs with leanXMSS, and I wrote its verifier in
+Fe: `verify_xmss` in `src/xmss.fe` recomputes a signature's 58 hash
+chains per layer and both Merkle paths back to the signer's key root,
+all in Keccak-256, the hash our trie walks already use. I implemented it
+from a line read of EthLib, Ethereum's formally verified library, at
+commit `dc0581d386cab73edd70b46681ba3f529875d80c`.
+
+The evidence is EthLib's own test suite. All 40 of its verification
+vectors are vendored under `fixtures/xmss`, CI re-downloads them from
+the pinned commit so they cannot drift, and three implementations agree
+on every one: EthLib's recorded outcomes, an independent Python oracle
+in `tools/oracle_xmss.py` that shares no code with EthLib, and the Fe
+verifier on both test backends. The vectors include the attacks: tampered
+chain values, tampered siblings, wrong digit sums, wrong keys, wrong
+leaf indices, and every one is refused.
+
+One committed test closes the circle: it verifies a real signature under
+EthLib's key, places that same 32-byte key in the spec's nine-field
+validator record, and proves it back out of the record root with the
+same `verify_branch` that anchors everything else on this page. Proving
+a key and checking its signatures are now the same toolbox.
+
 ## What changes when the fork is real
 
 When the fork actually ships, three small things change on our side, and
