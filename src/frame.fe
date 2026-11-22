@@ -12,6 +12,7 @@ use ingot::consumer::{
     BeaconRootsWithoutCode,
     Header,
     HeaderMismatch,
+    UnsupportedSlot,
 }
 use ingot::mpt::HASH_LEN
 use ingot::{
@@ -103,17 +104,31 @@ pub contract FrameGate uses (call: Call, ctx: Ctx) {
     account: Address,
     slot: u256,
     floor: u256,
+    first_slot: u64,
+    last_slot: u64,
 
-    init(roots: Address, watched: Address, watched_slot: u256, value_floor: u256)
-    uses (ctx, mut beacon_roots, mut account, mut slot, mut floor)
+    init(
+        roots: Address,
+        watched: Address,
+        watched_slot: u256,
+        value_floor: u256,
+        gloas_first_slot: u64,
+        end_slot: u64,
+    )
+    uses (ctx, mut beacon_roots, mut account, mut slot, mut floor, mut first_slot, mut last_slot)
     {
         if ctx.extcodesize(roots) == 0 {
             revert_error(BeaconRootsWithoutCode { roots })
+        }
+        if end_slot <= gloas_first_slot {
+            revert_error(UnsupportedSlot { slot: end_slot })
         }
         beacon_roots = roots
         account = watched
         slot = watched_slot
         floor = value_floor
+        first_slot = gloas_first_slot
+        last_slot = end_slot
     }
 
     recv FrameGateMsg {
@@ -126,7 +141,7 @@ pub contract FrameGate uses (call: Call, ctx: Ctx) {
             account_nodes,
             storage_nodes,
         } -> u256
-        uses (call, ctx, beacon_roots, account, slot, floor)
+        uses (call, ctx, beacon_roots, account, slot, floor, first_slot, last_slot)
         {
             let root = beacon_root(beacon_roots, timestamp)
             let computed = BeaconBlockHeader {
@@ -139,6 +154,9 @@ pub contract FrameGate uses (call: Call, ctx: Ctx) {
                 .root()
             if computed != root {
                 revert_error(HeaderMismatch { root: Bytes32 { val: root.value() } })
+            }
+            if header.slot < first_slot || header.slot >= last_slot {
+                revert_error(UnsupportedSlot { slot: header.slot })
             }
             checked(
                 verify_gloas_latest_block_hash(

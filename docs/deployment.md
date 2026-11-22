@@ -19,6 +19,13 @@ beacon block root down to the storage slot checked out inside the EVM.
 | proven value | `0xfcb19e6a322b27c06842a71e8c725399f049ae3a` |
 | EIP-4788 source | `0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02` |
 
+The deployment uses an open upper slot bound on purpose. A finite bound
+would brick the contract at a fork date nobody controls, while the real
+guard is the layout itself. Every generalized index is pinned by
+compile-time assertion against the Fulu layout, and a header from a
+reshaped future state fails verification rather than verifying
+wrongly. The lower bound, the Fulu activation slot, stays enforced.
+
 Reproduce the live read (no key needed):
 
 ```
