@@ -2,11 +2,12 @@ const DOCUMENTS = [
   { file: "deployment.md", title: "Mainnet deployment" },
   { file: "gas.md", title: "Gas benchmarks" },
   { file: "consuming.md", title: "Use Assay in your contract" },
+  { file: "audit.md", title: "How this audits itself" },
   { file: "frames.md", title: "Frame transactions" },
   { file: "pq.md", title: "Post-quantum Ethereum" },
   { file: "vectors.md", title: "Attack vector suite" },
   { file: "live_log.md", title: "Live verification log" },
-  { file: "audit.md", title: "Audit and findings" },
+  { file: "../SUBMISSION.md", title: "Submission and declaration" },
   { file: "../README.md", title: "README" }
 ];
 
