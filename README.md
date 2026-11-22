@@ -16,9 +16,9 @@ compiler's own output.
 Entry FE-024 in the Fe Builders Challenge. The declaration of starting
 point and third-party code is in [SUBMISSION.md](SUBMISSION.md).
 
-## Check it without trusting us
+## Verify everything
 
-Nothing below asks you to believe this README.
+Every claim in this README has a public check behind it.
 
 - **The live site** at [bomanaps.github.io/assay](https://bomanaps.github.io/assay/)
   shows the daily harvest of proven mainnet facts, and its
@@ -182,7 +182,7 @@ and a browser module that reproduces every one of those verdicts.
 [docs/audit.md](docs/audit.md) describes what we checked, what we found
 on the way, and what we deliberately do not claim.
 
-## Run it yourself
+## Build and test
 
 With the pinned Fe release (v26.6.0) and Python 3:
 
@@ -223,13 +223,12 @@ Moving parts are pinned, and gates in CI hold every pin.
 
 ## Limitations
 
-Stated flat, because every tool has edges. Proofs reach back to the
-Capella fork and no further, since older roots live in a structure the
-chain froze. The 4788 ring buffer holds roughly 27 hours of roots, so
-live verification needs an anchor younger than that, which the pipelines
-keep supplied. The receipt decoder refuses transaction types it does not
-know, today that means type 5 and above fail closed. The frame gate and
-the post-quantum work target moving drafts and say exactly which
-revision they implement. Fe has no fuzzer yet, so our adversarial
-coverage is the committed vector suites and tamper tests rather than
-random exploration.
+- Proofs reach back to the Capella fork and no further. Older roots live
+  in a structure the chain froze.
+- Live verification needs a beacon root younger than about 27 hours, the
+  depth of the 4788 ring buffer. The pipelines keep one supplied.
+- The receipt decoder fails closed on transaction types above 4.
+- The frame gate and the post-quantum work implement pinned revisions of
+  moving drafts, and say which ones.
+- Fe has no fuzzer yet, so adversarial coverage is the committed vector
+  suites and tamper tests rather than random exploration.
