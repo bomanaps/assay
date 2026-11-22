@@ -115,7 +115,7 @@ flowchart TD
     end
 
     chain -->|real proofs| CAPTURE
-    GENERATED --> TESTS[165 EVM + 130 native tests]
+    GENERATED --> TESTS[168 EVM + 130 native tests]
 
     subgraph pipelines [Workflows]
         CI[CI, every push, all gates] --> TESTS
@@ -175,7 +175,7 @@ called done. A fixture captured from a real network. An independent
 Python oracle that shares no code with the Fe verifier and must agree.
 Tamper tests that flip bytes, reuse branches and truncate proofs, each
 refused for its named reason. Both compile targets, EVM and native, with
-the same verdicts. Right now that is 165 EVM tests, 130 native tests, a
+the same verdicts. Right now that is 168 EVM tests, 130 native tests, a
 65-row CLI matrix, 12 committed attack vectors, 40 leanXMSS signature
 vectors agreed byte for byte with Ethereum's formally verified EthLib,
 and a browser module that reproduces every one of those verdicts.

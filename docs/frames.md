@@ -62,11 +62,14 @@ So the gate proves a storage fact in five steps, each one a hash check:
    root out of the header. The hash pins every byte, so the decoder only
    has to locate the field.
 5. Walk the Merkle-Patricia proofs for the account and the storage slot,
-   and enforce the gate's policy: the account, the slot, and a minimum
-   value are fixed when the gate is deployed, not supplied by the caller.
+   and enforce the gate's policy. The account, the slot, and a minimum
+   value are fixed when the gate is deployed, not supplied by the caller,
+   and so is a slot window, so a header from outside the fork range the
+   gindices were computed for is refused as UnsupportedSlot before any
+   branch is walked.
 
 Steps 1, 2 and 5 are the same code the mainnet BeaconProver runs. Steps 3
-and 4 are the Gloas additions. The 10 tests in
+and 4 are the Gloas additions. The 13 tests in
 `src/tests/frame_tests.fe` cover them on both test backends, EVM and
 native, and the committed fixture `fixtures/frame_gloas.json` is
 self-checking: it proves the 4788 ring buffer's own storage, so the
@@ -161,19 +164,23 @@ Everything below happened on bogota-devnet-2 on 2026-11-20 and can be
 checked on its explorer at https://dora.bogota-devnet-2.ethpandaops.io
 while the devnet lives.
 
-- Storage target: `0x5d93Aa46a0fD608028b1784f3531C835ed5322C0`, a
+- Storage target: `0x480444d4b1951cA0848bA0C2BFa928C96d5D3072`, a
   seven-byte contract whose slot 0 holds 42.
-- FrameGate: `0xC0806B8F67C8EE993254d2C943DA3A187BcBe891`, the Fe
-  verifier, deployed watching that slot with a floor of 1.
-- Pay shim: `0xd00EC054386D4C0bD6B5BBEFFbAe488939c87214`, the 53-byte
+- FrameGate: `0x59eD43AC3406519395e5E1F61646317A2132d935`, the Fe
+  verifier, deployed watching that slot with a floor of 1 and a slot
+  window of 0 to 10,000,000.
+- Pay shim: `0x3a43AC5E5Ba558505370E2bA890c082a335acE29`, the 53-byte
   APPROVE shim, funded to pay.
 - Proof verified on chain, in an ordinary type 2 transaction calling the
   gate directly:
-  `0xcde3bf0e71bfce9d5e221cdb64a5bdef12d4ebc246762c78af36d7080d8b6813`,
-  block 157718, status success, 318,360 gas, of which about 63,500 is
-  calldata for the 4,740-byte proof and about 234,000 is the verification
-  itself. The gate returned 42, the proven value, after walking every
-  hash from the live 4788 beacon root to the storage slot.
+  `0x7f32719612e2c6fa718028afc482b01c2cec15144903a1e06001307a888ddda1`,
+  block 170,560, status success, 341,453 gas. The gate returned 42, the
+  proven value, after walking every hash from the live 4788 beacon root
+  to the storage slot.
+- The gate's first deployment, before the slot window was added, remains
+  on the devnet with its own verification
+  (`0xcde3bf0e71bfce9d5e221cdb64a5bdef12d4ebc246762c78af36d7080d8b6813`,
+  block 157,718). The frame transaction below was submitted against it.
 - Validity gating refused: the signed type 0x06 transaction
   `[only_verify, pay]` was rejected at a 1,550,000 gas prefix as "frame
   transaction validation prefix exceeds the node verification budget"

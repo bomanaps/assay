@@ -105,7 +105,12 @@ storage slot has been checked inside the EVM.
 The same pattern works for the other entry points: `ProveValidator`,
 `ProveReceipt`, `ProveLog`, `ProveHistoricalRoot`, `ProveDeepHistoricalRoot`
 and `ProvePayload`. The repository's own `ValidatorGate` in `src/example.fe`
-is a complete worked consumer that gates on validator records.
+is a complete worked consumer that gates on validator records. One thing
+to design for in your own gate: the 4788 ring accepts any root from the
+last 27 hours, so a proof is a statement about some recent state, not
+the newest one. If your policy needs freshness or must never move
+backward, compare the proven beacon slot against what you last stored
+before acting on it.
 
 ## 3. Use the library directly
 

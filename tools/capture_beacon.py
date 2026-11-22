@@ -60,8 +60,14 @@ def fail(message):
     raise SystemExit(f"error: {message}")
 
 
+PUBLIC_DEFAULTS = {
+    "RPC_URL": "https://ethereum-rpc.publicnode.com",
+    "BEACON_URL": "https://ethereum-beacon-api.publicnode.com",
+}
+
+
 def env(name):
-    value = os.environ.get(name)
+    value = os.environ.get(name) or PUBLIC_DEFAULTS.get(name)
     if not value:
         fail(f"{name} is not set")
     return value.rstrip("/")

@@ -20,7 +20,7 @@ gates stay in CI so they keep clearing them.
    neighbouring positions, truncate node lists and corrupt encodings, and
    require the exact named refusal, not just any failure.
 4. **Both compile targets.** The suite runs on the EVM backend and the
-   native backend, 165 and 130 tests, and the browser module reproduces
+   native backend, 168 and 130 tests, and the browser module reproduces
    every committed verdict a third time.
 5. **Outside references where they exist.** The trie walk is checked
    against the ethereum/tests vectors and the execution specification.

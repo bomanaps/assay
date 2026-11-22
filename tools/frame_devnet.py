@@ -56,6 +56,8 @@ TARGET_INITCODE = bytes.fromhex("602a5f555f5ff3")
 TARGET_SLOT = 0
 TARGET_VALUE = 42
 VALUE_FLOOR = 1
+GLOAS_FIRST_SLOT = 0
+GATE_END_SLOT = 10_000_000
 
 ONLY_VERIFY_GAS = 5_000
 PAY_EXECUTION_GAS = 290_000
@@ -146,6 +148,8 @@ def deploy(state_dir, gate_bin):
         + hex_bytes(target.lower(), 20).rjust(32, b"\x00")
         + TARGET_SLOT.to_bytes(32, "big")
         + VALUE_FLOOR.to_bytes(32, "big")
+        + GLOAS_FIRST_SLOT.to_bytes(32, "big")
+        + GATE_END_SLOT.to_bytes(32, "big")
     )
     gate_code = gate_bin.read_text().strip().removeprefix("0x")
     gate_out = cast(state, ["send", "--create", "0x" + gate_code + constructor.hex()])

@@ -1,6 +1,7 @@
-use core::MemBuffer
+use core::{MemBuffer, MemVec}
 use ingot::fixture_support::load_packed
 use ingot::fixtures::frame_gloas as f
+use ingot::consumer::UnsupportedSlot
 use ingot::{
     execution_state_root,
     verify_account,
@@ -10,11 +11,16 @@ use ingot::{
     BeaconBlockHeader,
     BeaconRoot,
     Branch,
+    FrameGate,
+    FrameGateMsg,
+    Header,
     NodeList,
     ProofError,
     Proven,
     StateRoot,
 }
+use std::abi::{Bytes, Bytes32, DynArray}
+use std::evm::{Address, CallOutcome, Evm, RawOps, Wei, is_error}
 
 fn devnet_header() -> BeaconBlockHeader {
     BeaconBlockHeader {
@@ -186,4 +192,142 @@ fn swapped_storage_proofs_are_refused() {
         Result::Ok(value) => core::assert(value != f::BLOCK_TIMESTAMP as u256),
         Result::Err(_) => {},
     }
+}
+
+const MOCK_KEY: u64 = 1234
+const GAS: u256 = 30000000
+
+#[cfg(target = "evm")]
+contract FrameMockRoots uses (ops: RawOps) {
+    mut timestamp: u256,
+    mut root: u256,
+
+    init(key: u256, value: u256)
+    uses (mut timestamp, mut root)
+    {
+        timestamp = key
+        root = value
+    }
+
+    recv {
+        _ uses (ops, timestamp, root) {
+            if ops.calldatasize() != 32 || ops.calldataload(0) != timestamp {
+                ops.revert(data: MemBuffer::empty().span())
+            }
+            var out = MemBuffer::new(32)
+            out.write_word(offset: 0, value: root)
+            ops.return_data(data: out.span())
+        }
+    }
+}
+
+#[cfg(target = "evm")]
+fn gate_with_window(gloas_first_slot: u64, end_slot: u64) -> Address
+uses (evm: mut Evm)
+{
+    let roots = evm
+        .create2<FrameMockRoots>(
+            value: Wei::zero(),
+            args: (MOCK_KEY as u256, f::BLOCK_ROOT),
+            salt: 1,
+        )
+    evm.create2<FrameGate>(
+        value: Wei::zero(),
+        args: (roots, frame_account(), f::TIMESTAMP_SLOT, 1, gloas_first_slot, end_slot),
+        salt: 1,
+    )
+}
+
+fn frame_account() -> Address {
+    var word: u256 = 0
+    var i: usize = 0
+    while i < 20 {
+        word = (word << 8) | f::ADDRESS_BYTES[i] as u256
+        i += 1
+    }
+    Address::new(word)
+}
+
+#[cfg(target = "evm")]
+fn check_pay_call(gate: Address) -> CallOutcome uses (evm: mut Evm) {
+    let header = Header {
+        slot: f::SLOT,
+        proposer_index: f::PROPOSER_INDEX,
+        parent_root: Bytes32 { val: f::PARENT_ROOT },
+        state_root: Bytes32 { val: f::HEADER_STATE_ROOT },
+        body_root: Bytes32 { val: f::BODY_ROOT },
+    }
+    var branch: MemVec<Bytes32> = MemVec::new()
+    var i: usize = 0
+    while i < 14 {
+        branch.push(Bytes32 { val: f::LATEST_BLOCK_HASH_BRANCH[i] })
+        i += 1
+    }
+    var account_nodes: MemVec<Bytes> = MemVec::new()
+    let accounts = account_nodes_list()
+    i = 0
+    while i < accounts.count() {
+        account_nodes.push(Bytes::from_payload(source: accounts.node(i)))
+        i += 1
+    }
+    var storage_nodes: MemVec<Bytes> = MemVec::new()
+    let slots = slot_nodes(0)
+    i = 0
+    while i < slots.count() {
+        storage_nodes.push(Bytes::from_payload(source: slots.node(i)))
+        i += 1
+    }
+    let execution = execution_header()
+    evm.try_call(
+        addr: gate,
+        gas: GAS,
+        value: Wei::zero(),
+        message: FrameGateMsg::CheckPay {
+            timestamp: MOCK_KEY,
+            header,
+            latest_block_hash: Bytes32 { val: f::LATEST_BLOCK_HASH },
+            block_hash_branch: DynArray::from_mem_vec(branch),
+            execution_header: Bytes::from_payload(source: execution.span()),
+            account_nodes: DynArray::from_mem_vec(account_nodes),
+            storage_nodes: DynArray::from_mem_vec(storage_nodes),
+        },
+    )
+}
+
+fn account_nodes_list() -> NodeList {
+    NodeList::from_fixture(
+        f::ACCOUNT_BYTES,
+        f::ACCOUNT_OFFSETS,
+        first: 0,
+        count: f::ACCOUNT_NODE_COUNT,
+    )
+}
+
+#[test]
+#[cfg(target = "evm")]
+fn the_gate_proves_the_ring_slot_on_chain() uses (evm: mut Evm) {
+    let gate = gate_with_window(gloas_first_slot: 0, end_slot: f::SLOT + 100)
+    let outcome = check_pay_call(gate)
+    core::assert(outcome.success())
+    core::assert(
+        outcome.returndata().read_word(0) == f::BLOCK_TIMESTAMP as u256,
+    )
+}
+
+#[test]
+#[cfg(target = "evm")]
+fn a_header_before_the_gloas_window_is_refused_on_chain() uses (evm: mut Evm) {
+    let gate = gate_with_window(gloas_first_slot: f::SLOT + 1, end_slot: f::SLOT + 100)
+    let outcome = check_pay_call(gate)
+    core::assert(!outcome.success())
+    core::assert(is_error<UnsupportedSlot>(outcome.returndata()))
+}
+
+#[test]
+#[cfg(target = "evm")]
+fn a_header_at_the_window_end_is_refused_on_chain() uses (evm: mut Evm) {
+    let gate = gate_with_window(gloas_first_slot: 0, end_slot: f::SLOT)
+    let outcome = check_pay_call(gate)
+    core::assert(!outcome.success())
+    core::assert(is_error<UnsupportedSlot>(outcome.returndata()))
 }
