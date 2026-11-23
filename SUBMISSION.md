@@ -16,7 +16,7 @@ browser, and provably the pinned compiler's own output.
   browser module only, both pinned and gated in CI
 - License: Apache-2.0
 - Demo: https://bomanaps.github.io/assay/ and its Run page, plus the
-  video linked from the site
+  video at https://youtu.be/720HFKK_0-A, also linked from the site
 
 ## Starting point
 
