@@ -20,6 +20,9 @@ point and third-party code is in [SUBMISSION.md](SUBMISSION.md).
 
 Every claim in this README has a public check behind it.
 
+- **The demo video** at [youtu.be/720HFKK_0-A](https://youtu.be/720HFKK_0-A)
+  walks the whole system in three minutes, and everything it shows is a
+  real verification recorded live.
 - **The live site** at [bomanaps.github.io/assay](https://bomanaps.github.io/assay/)
   shows the daily harvest of proven mainnet facts, and its
   [Run page](https://bomanaps.github.io/assay/run.html) lets you fire
