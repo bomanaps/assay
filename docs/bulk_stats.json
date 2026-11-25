@@ -1,7 +1,7 @@
 {
- "accounts": 12000,
+ "accounts": 13500,
  "note": "seeded from every harvest in the git history of docs/bulk_receipts.json; each later run adds its own counts",
- "runs": 8,
+ "runs": 9,
  "seededFromCommits": [
   "89f933458e5fd0dc78aa6a3c6f3c01274ff02d40",
   "c09caff203da2c134d65467174453808527627fa",
@@ -10,5 +10,5 @@
   "9c3648d1636ca2600fe9a689bd34bfa5cc41025d"
  ],
  "since": "2026-11-17T15:48:43+00:00",
- "slots": 5172
+ "slots": 5932
 }
