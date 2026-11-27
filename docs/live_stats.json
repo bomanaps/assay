@@ -1,7 +1,7 @@
 {
- "accounts": 60,
- "last_slot": 15745399,
- "last_updated": "2026-11-27T08:40:41+00:00",
- "runs": 20,
- "slots": 100
+ "accounts": 63,
+ "last_slot": 15749205,
+ "last_updated": "2026-11-27T21:21:50+00:00",
+ "runs": 21,
+ "slots": 105
 }
